@@ -1,0 +1,25 @@
+.env
+
+node_modules
+/built.mjs
+/package-lock.json
+
+uv.lock
+.python-version
+
+.aider*
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# OS specific
+.DS_Store
+Thumbs.db
