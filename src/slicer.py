@@ -65,7 +65,7 @@ def slice_at_height(stl_mesh, z_height):
         # Check if the triangle intersects with the z plane
         above = vertices[:, 2] > z_height
         below = vertices[:, 2] < z_height
-        on_plane = np.isclose(vertices[:, 2], z_height)
+        on_plane = np.isclose(vertices[:, 2], z_height, atol=1e-6)
         
         # If all vertices are above or below the plane, no intersection
         if np.all(above) or np.all(below):
@@ -108,7 +108,26 @@ def slice_at_height(stl_mesh, z_height):
     
     try:
         # Create polygons from the segments
-        polygons = list(polygonize(unary_union(segments)))
+        # First, ensure the segments are properly connected
+        merged_lines = unary_union(segments)
+        
+        # Debug information
+        print(f"  Found {len(segments)} segments at z={z_height:.2f}")
+        
+        # Try to form polygons
+        polygons = list(polygonize(merged_lines))
+        
+        if not polygons:
+            # If no polygons were created, try an alternative approach
+            # Sometimes segments don't perfectly connect due to floating point issues
+            # We can buffer them slightly to help them connect
+            buffered = merged_lines.buffer(0.001)
+            if isinstance(buffered, Polygon):
+                polygons = [buffered]
+            elif isinstance(buffered, MultiPolygon):
+                polygons = list(buffered.geoms)
+        
+        print(f"  Created {len(polygons)} polygons at z={z_height:.2f}")
         return polygons
     except Exception as e:
         print(f"Error creating polygons: {e}")

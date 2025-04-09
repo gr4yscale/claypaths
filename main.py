@@ -28,7 +28,7 @@ def main():
         
         # Step 2: Slice the model into layers
         print("\nStep 2: Slicing the model into layers")
-        layer_height = 0.2  # Default layer height in mm
+        layer_height = 1.0  # Default layer height in mm
         layers = slice_mesh(stl_mesh, layer_height)
         
         # Visualize a few layers
