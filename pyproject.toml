@@ -6,4 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aider-chat>=0.81.1",
+    "matplotlib>=3.10.1",
+    "numpy-stl>=3.2.0",
 ]
