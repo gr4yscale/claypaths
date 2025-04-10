@@ -1,10 +1,16 @@
-from shapely.geometry import Polygon, MultiPolygon, LineString
-from shapely.ops import unary_union
+from shapely.geometry import Polygon, MultiPolygon, LineString, Point
+from shapely.ops import unary_union, nearest_points
 import matplotlib.pyplot as plt
 import networkx as nx
 import math
+from typing import List, Dict, Tuple, Optional, Any
 
-def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4):
+# Define type aliases for clarity
+ContourData = Dict[str, Any] # {'polygon': Polygon, 'i': int, 'j': int, 'id': str}
+MST = nx.Graph
+PathSegment = List[str] # List of node IDs forming a path in the MST
+
+def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4) -> Optional[LineString]:
     """
     Generates a continuous Fermat spiral (CFS) fill path for a given 2D region.
 
@@ -203,42 +209,334 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4):
 
     # --- Step 6: Identify Spirallable Regions & Branch Points ---
     print("\nStep 6: Identifying Spirallable Regions & Branch Points...")
-    # Traverse MST, calculate node degrees.
-    # Degree <= 2: Part of spirallable region path.
-    # Degree > 2: Branch point.
-    degrees = dict(spiral_contour_tree.degree())
-    branch_points = [node for node, degree in degrees.items() if degree > 2]
-    leaf_nodes = [node for node, degree in degrees.items() if degree == 1] # Exclude root if it's a leaf? Root c_0_0 degree can be 1.
+    mst_structure = identify_mst_structure(spiral_contour_tree, boundary_node['id'])
+    if not mst_structure:
+        print("Error: Failed to analyze MST structure.")
+        plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width)
+        return None
 
-    print(f"  Identified {len(branch_points)} branch points: {branch_points}")
-    print(f"  Identified {len(leaf_nodes)} leaf nodes (potential spiral ends): {leaf_nodes}")
-    # Further analysis needed to group nodes into spirallable paths between branch/leaf nodes.
+    branch_points = mst_structure['branch_points']
+    leaf_nodes = mst_structure['leaf_nodes']
+    spirallable_paths = mst_structure['paths']
+
+    print(f"  Identified {len(branch_points)} branch points: {list(branch_points)}")
+    print(f"  Identified {len(leaf_nodes)} leaf nodes: {list(leaf_nodes)}")
+    print(f"  Identified {len(spirallable_paths)} spirallable paths/segments.")
+    # for i, path in enumerate(spirallable_paths):
+    #     print(f"    Path {i+1}: {' -> '.join(path)}")
 
 
     # --- Step 7: Recursive Rerouting (Bottom-Up Traversal of MST) ---
-    print("\nStep 7: Recursive Rerouting (Bottom-Up Traversal)...")
-    # This is the core logic involving Fermat spiral generation (Section 3/Figure 5)
-    # and merging at branch points. Requires detailed implementation.
-    # Placeholder for now.
-    final_path = None # Placeholder for the resulting LineString
-    print("  (Placeholder for Rerouting Logic)")
-
+    print("\nStep 7: Performing Recursive Rerouting (Bottom-Up Traversal)...")
+    # This step requires the detailed logic from the paper (Section 3, Fig 5)
+    # We pass the MST, contour data, toolpath width, and the identified structure.
+    final_path = perform_recursive_rerouting(
+        spiral_contour_tree,
+        all_contours_data,
+        toolpath_width,
+        mst_structure
+    )
 
     # --- Step 8: Output ---
     print("\nStep 8: Outputting Final Path...")
-    if final_path:
-        print(f"  CFS path generated successfully.")
+    if final_path and isinstance(final_path, LineString) and not final_path.is_empty:
+        print(f"  CFS path generated successfully (Length: {final_path.length:.2f}).")
         # Optional: Simplify or smooth the path (Step 9)
+        # final_path = final_path.simplify(tolerance=toolpath_width / 10)
+        plot_contours_and_path(all_contours_data, spiral_contour_tree, final_path, toolpath_width) # Visualize result
         return final_path
     else:
-        print("  CFS path generation incomplete or failed.")
-        # For debugging, let's visualize the contours and MST
+        print("  CFS path generation incomplete or failed in Step 7.")
+        # For debugging, visualize the contours and MST
         plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width)
         return None
 
 
-# Helper function for visualization (optional, requires matplotlib)
-def plot_contours_and_mst(contours_data, mst, toolpath_width):
+# --------------------------------------------------------------------------
+# Helper Functions for CFS Algorithm Steps
+# --------------------------------------------------------------------------
+
+def identify_mst_structure(mst: MST, root_node_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Analyzes the MST to find leaf nodes, branch points, and spirallable paths.
+
+    Args:
+        mst (MST): The Minimum Spanning Tree graph.
+        root_node_id (str): The ID of the root node (boundary contour).
+
+    Returns:
+        Optional[Dict[str, Any]]: A dictionary containing 'leaf_nodes' (set),
+                                   'branch_points' (set), and 'paths' (list of lists of node IDs),
+                                   or None if the MST is empty or invalid.
+    """
+    if not mst or mst.number_of_nodes() == 0:
+        print("Error: MST is empty or invalid.")
+        return None
+
+    degrees = dict(mst.degree())
+    nodes = set(mst.nodes())
+
+    # Identify leaves (degree 1) and branch points (degree > 2)
+    # The root node is treated specially - it's not a leaf even if degree is 1.
+    leaf_nodes = {node for node, degree in degrees.items() if degree == 1 and node != root_node_id}
+    branch_nodes = {node for node, degree in degrees.items() if degree > 2}
+    # Include root node as a potential branch point if its degree is > 1 (or > 0 if it's the only node?)
+    # The root acts as the start/end point.
+    if degrees.get(root_node_id, 0) > 1:
+         branch_nodes.add(root_node_id)
+    elif mst.number_of_nodes() > 1 and degrees.get(root_node_id, 0) == 1:
+         # If root has degree 1 and it's not the only node, it acts like a path end.
+         pass # Not technically a branch, but the path terminates/starts here.
+
+    # Find paths (sequences of degree-2 nodes) between leaves and branch points
+    paths = []
+    visited_edges = set()
+
+    # Start traversal from leaf nodes
+    for start_node in leaf_nodes:
+        if start_node not in nodes: continue # Should not happen
+        current_path = [start_node]
+        prev_node = None
+        curr_node = start_node
+
+        while True:
+            neighbors = list(mst.neighbors(curr_node))
+            # Find the next node that isn't the previous one
+            next_node = None
+            for neighbor in neighbors:
+                if neighbor != prev_node:
+                    edge = tuple(sorted((curr_node, neighbor)))
+                    if edge not in visited_edges:
+                        next_node = neighbor
+                        break
+                    else:
+                         # Edge already part of another path, stop here
+                         # This can happen if we start from a branch point later
+                         pass
+
+            if next_node is None: # Reached end of traversal (maybe back at start or visited edge)
+                break
+
+            edge = tuple(sorted((curr_node, next_node)))
+            if edge in visited_edges: # Should be caught above, but double check
+                 print(f"Warning: Edge {edge} already visited when traversing from {start_node}")
+                 break
+            visited_edges.add(edge)
+            current_path.append(next_node)
+
+            # If the next node is a branch point or the root, the path ends
+            if next_node in branch_nodes or next_node == root_node_id:
+                break
+
+            # If the next node is somehow a leaf (shouldn't happen in MST unless 2 nodes total)
+            if next_node in leaf_nodes:
+                 print(f"Warning: Path from leaf {start_node} encountered another leaf {next_node} unexpectedly.")
+                 break # Path ends
+
+            # Continue traversal
+            prev_node = curr_node
+            curr_node = next_node
+            # Safety break for unexpected cycles or issues
+            if len(current_path) > mst.number_of_nodes() * 2:
+                 print(f"Error: Path traversal from {start_node} seems stuck in a loop. Aborting path finding.")
+                 return None # Indicate error
+
+        if len(current_path) > 1:
+            paths.append(current_path)
+
+    # Start traversal from branch nodes to find paths connecting them
+    for start_node in branch_nodes:
+        if start_node not in nodes: continue
+        for neighbor in mst.neighbors(start_node):
+            edge = tuple(sorted((start_node, neighbor)))
+            if edge in visited_edges:
+                continue # This path segment already covered (likely starting from a leaf)
+
+            # Start a new path from this neighbor
+            current_path = [start_node, neighbor]
+            visited_edges.add(edge)
+            prev_node = start_node
+            curr_node = neighbor
+
+            while True:
+                # If the current node is a branch point or leaf, path ends here
+                if curr_node in branch_nodes or curr_node in leaf_nodes:
+                    break
+
+                neighbors = list(mst.neighbors(curr_node))
+                next_node = None
+                for next_cand in neighbors:
+                    if next_cand != prev_node:
+                        next_node = next_cand
+                        break
+
+                if next_node is None: # Should not happen in a connected MST path unless it's the end
+                    print(f"Warning: Path traversal from branch {start_node} via {neighbor} ended unexpectedly at {curr_node}.")
+                    break
+
+                edge = tuple(sorted((curr_node, next_node)))
+                if edge in visited_edges:
+                    print(f"Warning: Edge {edge} already visited when traversing from branch {start_node} via {neighbor}.")
+                    break # Avoid reusing edges
+                visited_edges.add(edge)
+                current_path.append(next_node)
+
+                # Check if the new node ends the path
+                if next_node in branch_nodes or next_node in leaf_nodes:
+                    break
+
+                # Continue traversal
+                prev_node = curr_node
+                curr_node = next_node
+                # Safety break
+                if len(current_path) > mst.number_of_nodes() * 2:
+                     print(f"Error: Path traversal from branch {start_node} seems stuck in a loop. Aborting path finding.")
+                     return None # Indicate error
+
+            if len(current_path) > 1: # Should always be > 1 here
+                 paths.append(current_path)
+
+
+    # Validation: Check if all edges are covered
+    if len(visited_edges) != mst.number_of_edges():
+        print(f"Warning: Path identification covered {len(visited_edges)} edges, but MST has {mst.number_of_edges()}. Some edges might be missed.")
+        # This might happen if the root has degree 1 and is the only branch point.
+
+    return {
+        'leaf_nodes': leaf_nodes,
+        'branch_points': branch_nodes,
+        'paths': paths,
+        'root_node_id': root_node_id
+    }
+
+
+def perform_recursive_rerouting(mst: MST,
+                                contours_data: List[ContourData],
+                                toolpath_width: float,
+                                mst_structure: Dict[str, Any]) -> Optional[LineString]:
+    """
+    Performs the recursive rerouting process based on the MST structure.
+    (Currently a placeholder implementation).
+
+    Args:
+        mst (MST): The Minimum Spanning Tree.
+        contours_data (List[ContourData]): List containing data for each contour node.
+        toolpath_width (float): The toolpath width 'w'.
+        mst_structure (Dict[str, Any]): Analysis result from identify_mst_structure.
+
+    Returns:
+        Optional[LineString]: The final continuous toolpath, or None if failed.
+    """
+    print("  Starting Step 7: Recursive Rerouting...")
+    root_node_id = mst_structure['root_node_id']
+    paths = mst_structure['paths']
+    branch_points = mst_structure['branch_points']
+    contours_map = {cd['id']: cd for cd in contours_data}
+
+    # This requires a bottom-up traversal strategy (from leaves/inner contours towards root)
+    # We need to process spirallable paths and merge them at branch points.
+
+    # Placeholder: Just connect centroids of the first path found as a dummy output
+    if paths:
+        first_path_nodes = paths[0]
+        path_coords = []
+        for node_id in first_path_nodes:
+            contour_data = contours_map.get(node_id)
+            if contour_data:
+                path_coords.append(contour_data['polygon'].centroid.coords[0])
+
+        if len(path_coords) >= 2:
+            print("  (Placeholder: Returning LineString connecting centroids of the first identified path)")
+            return LineString(path_coords)
+        else:
+             print("  (Placeholder: Not enough points in the first path to create a LineString)")
+             return None
+    else:
+        print("  No spirallable paths found to generate even a placeholder path.")
+        # Handle the case of a single contour (just the boundary)
+        if len(contours_map) == 1 and root_node_id in contours_map:
+             print("  Only boundary contour exists. No fill path needed/possible.")
+             # Returning the exterior might be an option, but CFS is for filling.
+             # return contours_map[root_node_id]['polygon'].exterior
+             return None # No fill path
+        return None
+
+    # --- Actual Implementation Sketch ---
+    # 1. Data Structure: Need to store generated path segments (LineStrings) associated with MST edges or nodes.
+    # 2. Traversal Order: Determine a processing order, likely starting from paths connected to leaves.
+    #    - Could use a topological sort if viewed as a directed tree from root, then reverse?
+    #    - Or, recursive function starting from root, processing children first.
+    # 3. Process Spirallable Paths:
+    #    - For each path in mst_structure['paths']:
+    #        - Call `generate_spiral_segment(path_nodes, contours_map, toolpath_width)`
+    #        - This function needs the detailed Fermat spiral logic (inward/outward links, B(p), N(p), rerouting points).
+    #        - It should return a LineString representing the spiral for that segment, connecting the entry/exit points defined by MST connections.
+    # 4. Process Branch Points:
+    #    - When the traversal reaches a branch point where all incoming child paths have been processed:
+    #        - Call `merge_paths_at_branch(branch_node_id, incoming_paths, contours_map, toolpath_width)`
+    #        - This function needs logic to connect the ends of the incoming spiral segments smoothly within the contour of the branch node. Connection points depend on the MST edges (connecting segments O).
+    # 5. Final Path: The result of processing the root node should be the complete path.
+
+    # --- Placeholder Return ---
+    # return None # Replace with actual result
+
+
+def generate_spiral_segment(path_nodes: PathSegment,
+                            contours_map: Dict[str, ContourData],
+                            toolpath_width: float) -> Optional[LineString]:
+    """
+    Generates the Fermat spiral segment for a sequence of contours (a path in the MST).
+    (Placeholder - Requires detailed implementation based on Section 3 of the paper).
+
+    Args:
+        path_nodes (PathSegment): List of contour node IDs forming the path.
+        contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
+        toolpath_width (float): Toolpath width 'w'.
+
+    Returns:
+        Optional[LineString]: The generated spiral segment, or None if failed.
+    """
+    print(f"  (Placeholder: Generate spiral segment for path: {' -> '.join(path_nodes)})")
+    # TODO: Implement Fermat spiral generation logic here.
+    # - Determine inward/outward links based on path direction.
+    # - Find rerouting points B(p), N(p) on adjacent contours.
+    # - Connect segments according to Figure 5 in the paper.
+    # - Needs robust geometric calculations (intersections, projections, etc.).
+    return None
+
+
+def merge_paths_at_branch(branch_node_id: str,
+                          incoming_segments: Dict[str, LineString], # Keyed by child node ID
+                          contours_map: Dict[str, ContourData],
+                          toolpath_width: float) -> Optional[LineString]:
+    """
+    Merges multiple incoming spiral path segments at a branch point contour.
+    (Placeholder - Requires detailed implementation).
+
+    Args:
+        branch_node_id (str): The ID of the branch contour node.
+        incoming_segments (Dict[str, LineString]): Dictionary mapping the child node ID
+                                                   (from which the segment originates)
+                                                   to the LineString segment itself.
+        contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
+        toolpath_width (float): Toolpath width 'w'.
+
+    Returns:
+        Optional[LineString]: The merged path segment, or None if failed.
+    """
+    print(f"  (Placeholder: Merge {len(incoming_segments)} segments at branch node {branch_node_id})")
+    # TODO: Implement path merging logic here.
+    # - Identify connection points on the branch contour based on MST edges (connecting segments O).
+    # - Connect the endpoints of the incoming_segments smoothly.
+    # - May involve generating short connecting paths within the branch contour polygon.
+    return None
+
+
+# --------------------------------------------------------------------------
+# Visualization Helpers
+# --------------------------------------------------------------------------
+
+def plot_contours_and_mst(contours_data: List[ContourData], mst: Optional[MST], toolpath_width: float):
     fig, ax = plt.subplots(figsize=(10, 10))
     cmap = plt.get_cmap('viridis')
     num_levels = max(cd['i'] for cd in contours_data) if contours_data else 1
@@ -278,10 +576,56 @@ def plot_contours_and_mst(contours_data, mst, toolpath_width):
     ax.set_ylabel("Y")
     # plt.legend() # Legend might get too crowded
     plt.grid(True, linestyle=':', alpha=0.5)
-    plt.show()
+    plt.show(block=False) # Use non-blocking show for potentially multiple plots
 
 
+def plot_contours_and_path(contours_data: List[ContourData], mst: Optional[MST], final_path: Optional[LineString], toolpath_width: float):
+    """ Plots contours, optionally the MST, and the final generated path. """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    cmap = plt.get_cmap('viridis')
+    num_levels = max(cd['i'] for cd in contours_data) if contours_data else 1
+
+    # Plot contours (lightly)
+    for cd in contours_data:
+        poly = cd['polygon']
+        level = cd['i']
+        color = cmap(level / max(num_levels, 1))
+        x, y = poly.exterior.xy
+        ax.plot(x, y, color=color, linewidth=0.5, alpha=0.6) # Lighter contours
+        for interior in poly.interiors:
+            x_int, y_int = interior.xy
+            ax.plot(x_int, y_int, color=color, linestyle='--', linewidth=0.5, alpha=0.6)
+
+    # Plot MST edges (optional, can be noisy)
+    # if mst:
+    #     for u, v, data in mst.edges(data=True):
+    #         node_u_data = next((cd for cd in contours_data if cd['id'] == u), None)
+    #         node_v_data = next((cd for cd in contours_data if cd['id'] == v), None)
+    #         if node_u_data and node_v_data:
+    #             poly_u = node_u_data['polygon']
+    #             poly_v = node_v_data['polygon']
+    #             centroid_u = poly_u.centroid
+    #             centroid_v = poly_v.centroid
+    #             ax.plot([centroid_u.x, centroid_v.x], [centroid_u.y, centroid_v.y], 'r-', linewidth=0.5, alpha=0.4)
+
+    # Plot the final path
+    if final_path and isinstance(final_path, LineString) and not final_path.is_empty:
+        x_path, y_path = final_path.xy
+        ax.plot(x_path, y_path, 'b-', linewidth=1.0, label='Generated Path') # Blue, solid line
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_title(f"Contours and Generated Path (w={toolpath_width})")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    if final_path:
+        ax.legend()
+    plt.grid(True, linestyle=':', alpha=0.5)
+    plt.show(block=False) # Use non-blocking show
+
+
+# --------------------------------------------------------------------------
 # Example Usage (for testing within this file)
+# --------------------------------------------------------------------------
 if __name__ == '__main__':
     # Create a sample polygon (e.g., a rounded rectangle)
     # sample_polygon = Polygon([(0, 0), (10, 0), (10, 5), (0, 5)]).buffer(1, join_style=2).buffer(-1, join_style=2) # Simple rectangle
@@ -295,22 +639,16 @@ if __name__ == '__main__':
 
 
     print("Testing CFS Fill Generation...")
-    cfs_path = generate_cfs_fill(sample_polygon, toolpath_width=0.8)
+    # Use a slightly larger toolpath width for fewer contours in testing
+    test_toolpath_width = 1.0
+    cfs_path = generate_cfs_fill(sample_polygon, toolpath_width=test_toolpath_width)
 
     if cfs_path:
-        # Visualize the final path if generated
-        fig, ax = plt.subplots(figsize=(8, 8))
-        x_orig, y_orig = sample_polygon.exterior.xy
-        ax.plot(x_orig, y_orig, 'k--', label='Original Boundary')
-        for interior in sample_polygon.interiors:
-             x_int, y_int = interior.xy
-             ax.plot(x_int, y_int, 'k:')
-
-        x_path, y_path = cfs_path.xy
-        ax.plot(x_path, y_path, 'b-', label='CFS Path')
-        ax.set_aspect('equal', adjustable='box')
-        ax.set_title("Generated CFS Path (Placeholder)")
-        ax.legend()
-        plt.show()
+        print("\nCFS Path generated (see plot).")
+        # Visualization is now handled within generate_cfs_fill or by plot_contours_and_path
+        # Keep the script running to see the plot
+        plt.show() # Add a blocking show() call at the end if needed
     else:
-        print("CFS Path generation did not complete.")
+        print("\nCFS Path generation did not complete (see plot for contours/MST).")
+        # Keep the script running to see the plot
+        plt.show() # Add a blocking show() call at the end if needed
