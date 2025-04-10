@@ -116,21 +116,36 @@ def slice_at_height(stl_mesh, z_height):
         
         # Try to form polygons
         polygons = list(polygonize(merged_lines))
-        
+
         if not polygons:
-            # If no polygons were created, try an alternative approach
-            # Sometimes segments don't perfectly connect due to floating point issues
-            # We can buffer them slightly to help them connect
-            buffered = merged_lines.buffer(0.001)
-            if isinstance(buffered, Polygon):
-                polygons = [buffered]
-            elif isinstance(buffered, MultiPolygon):
-                polygons = list(buffered.geoms)
-        
-        print(f"  Created {len(polygons)} polygons at z={z_height:.2f}")
-        return polygons
+            # If polygonize failed initially, it might be due to disconnected segments.
+            # The previous buffer(0.001) fallback often merged holes.
+            # Let's log this and return the empty list.
+            # A more advanced approach could involve snapping vertices or more careful buffering.
+            print(f"  Warning: polygonize did not create polygons from segments at z={z_height:.2f}. Segments might not form closed loops.")
+            # Optionally, visualize the problematic segments:
+            # if isinstance(merged_lines, (LineString, MultiLineString)):
+            #     fig, ax = plt.subplots()
+            #     if isinstance(merged_lines, LineString):
+            #         x, y = merged_lines.xy
+            #         ax.plot(x, y, 'r-')
+            #     else: # MultiLineString
+            #         for line in merged_lines.geoms:
+            #             x, y = line.xy
+            #             ax.plot(x, y, 'r-')
+            #     ax.set_title(f"Problematic Segments at z={z_height:.2f}")
+            #     ax.set_aspect('equal')
+            #     plt.show(block=False)
+
+        # Ensure all returned geometries are valid Polygons
+        valid_polygons = [p for p in polygons if isinstance(p, Polygon) and p.is_valid and not p.is_empty]
+        if len(valid_polygons) != len(polygons):
+             print(f"  Warning: Filtered out {len(polygons) - len(valid_polygons)} invalid/non-polygon geometries.")
+
+        print(f"  Created {len(valid_polygons)} valid polygons at z={z_height:.2f}")
+        return valid_polygons
     except Exception as e:
-        print(f"Error creating polygons: {e}")
+        print(f"Error during polygonization at z={z_height:.2f}: {e}")
         return []
 
 def visualize_layer(layer_contours, layer_num, z_height):
