@@ -591,12 +591,20 @@ def perform_recursive_rerouting(mst: MST,
                 # Let's call generate_spiral_segment for the [node_id, parent_id] link
                 # and then try to combine it with the incoming segment.
                 print(f"        -> Extending segment from child {child_id} towards parent {parent_id}.")
+                start_override = Point(incoming_segment.coords[-1]) # Endpoint of incoming path
+                print(f"        -> Using start override: {start_override.wkt[:30]}")
+
                 path_nodes_extension = [node_id, parent_id] if parent_id else [node_id]
                 if len(path_nodes_extension) > 1:
-                    extension_segment = generate_spiral_segment(path_nodes_extension, contours_map, toolpath_width)
+                    # Pass the endpoint of the incoming segment as the override start point
+                    extension_segment = generate_spiral_segment(
+                        path_nodes_extension,
+                        contours_map,
+                        toolpath_width,
+                        start_point_override=start_override
+                    )
                     if extension_segment:
                         # Combine incoming_segment and extension_segment
-                        # Ensure they connect head-to-tail. This requires knowing connection points.
                         # Simplification: Assume they connect correctly for now.
                         coords_incoming = get_coords(incoming_segment)
                         coords_extension = get_coords(extension_segment)
@@ -621,12 +629,16 @@ def perform_recursive_rerouting(mst: MST,
                      outgoing_segment = incoming_segment # No parent, just return incoming
             else:
                 # No incoming segment (e.g., child failed or is leaf), generate new segment if possible
-                print(f"        -> No incoming segment from child {child_id}. Generating new segment towards {parent_id}.")
+                # No incoming segment (e.g., child failed or is leaf), generate new segment if possible
+                # This case shouldn't happen for a degree-2 node in a properly formed MST originating from a leaf,
+                # unless the leaf segment generation failed.
+                print(f"        -> Warning: No incoming segment from child {child_id} at degree-2 node {node_id}. Generating new segment towards {parent_id}.")
                 path_nodes = [node_id, parent_id] if parent_id else [node_id]
                 if len(path_nodes) > 1:
-                     outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width)
+                     # No incoming segment, so no start point override
+                     outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width, start_point_override=None)
                      if outgoing_segment:
-                          print(f"        -> Generated new segment (Length: {outgoing_segment.length:.2f})")
+                          print(f"        -> Generated new segment directly (Length: {outgoing_segment.length:.2f})")
                      else:
                           print(f"        -> Failed to generate new segment.")
 
@@ -658,7 +670,8 @@ def perform_recursive_rerouting(mst: MST,
 
 def generate_spiral_segment(path_nodes: PathSegment,
                             contours_map: Dict[str, ContourData],
-                            toolpath_width: float) -> Optional[LineString]:
+                            toolpath_width: float,
+                            start_point_override: Optional[Point] = None) -> Optional[LineString]:
     """
     Generates a path segment connecting a sequence of contours (a path in the MST).
     (Simplified Implementation: Connects nearest points and traces contour exteriors).
@@ -668,6 +681,9 @@ def generate_spiral_segment(path_nodes: PathSegment,
                                   Assumed to be ordered from inner to outer contour generally.
         contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
         toolpath_width (float): Toolpath width 'w'.
+        start_point_override (Optional[Point]): If provided, use this as the starting point
+                                                 on the first contour (node_id_inner) instead
+                                                 of tracing the whole contour.
 
     Returns:
         Optional[LineString]: The generated path segment, or None if failed.
@@ -719,31 +735,44 @@ def generate_spiral_segment(path_nodes: PathSegment,
 
 
         # --- Add segment on the inner contour ---
-        # Connect from the previous segment's end point (on this contour) to p_inner.
-        start_point_on_inner = last_connection_point_on_outer # From previous iteration's p_outer
-        if start_point_on_inner:
-            print(f"    Connecting from previous point on {node_id_inner} to nearest point {p_inner.wkt[:30]}...")
+        # Determine the starting point for the segment on the inner contour
+        start_point_on_inner = None
+        if i == 0 and start_point_override: # First iteration and override provided
+             start_point_on_inner = start_point_override
+             print(f"    Starting segment on {node_id_inner} from override point {start_point_on_inner.wkt[:30]}...")
+        elif i > 0: # Subsequent iterations use the connection point from the previous outer contour
+             start_point_on_inner = last_connection_point_on_outer # From previous iteration's p_outer
+             print(f"    Connecting from previous point on {node_id_inner} ({start_point_on_inner.wkt[:30]}) to nearest point {p_inner.wkt[:30]}...")
+        # Else (i == 0 and no override): This is the leaf/innermost case handled below
+
+        if start_point_on_inner: # Connect from known start point to p_inner
             segment_coords_inner = get_line_segment_coords(poly_inner.exterior, start_point_on_inner, p_inner)
             if segment_coords_inner:
                 # Avoid duplicate points if segments connect
+                # Check distance from overall last point to start of new segment
                 if all_segment_coords and Point(all_segment_coords[-1]).distance(Point(segment_coords_inner[0])) < 1e-3:
                      all_segment_coords.extend(segment_coords_inner[1:])
+                # Check distance from override point if it's the very start
+                elif i == 0 and start_point_override and start_point_override.distance(Point(segment_coords_inner[0])) < 1e-3:
+                     all_segment_coords.extend(segment_coords_inner) # Add the whole segment including start point
                 else:
                      all_segment_coords.extend(segment_coords_inner)
             else:
                  print(f"    Warning: Could not get segment on inner contour {node_id_inner}. Adding jump.")
                  # Add jump if segment fails
                  if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
-                      all_segment_coords.extend(get_coords(p_inner))
+                      # Add jump if segment fails
+                      if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
+                           all_segment_coords.extend(get_coords(p_inner))
 
-        else:
-            # First segment in the path (innermost contour).
+        elif i == 0 and not start_point_override:
+            # First segment (i=0) and no override: This is the innermost contour (leaf case).
             # Simplification: Trace the *entire* inner contour exterior starting near p_inner.
-            # This is not correct spiral behavior but fills space.
-            print(f"    Starting segment on innermost contour {node_id_inner}.")
+            print(f"    Tracing entire innermost contour {node_id_inner} starting near {p_inner.wkt[:30]}.")
             inner_coords = get_coords(poly_inner.exterior)
             if inner_coords:
                  start_idx = find_point_index(poly_inner.exterior, p_inner)
+                 if start_idx == -1: start_idx = 0 # Fallback if point not found
                  # Rotate coords to start near p_inner
                  rotated_coords = inner_coords[start_idx:-1] + inner_coords[:start_idx+1]
                  all_segment_coords.extend(rotated_coords)
