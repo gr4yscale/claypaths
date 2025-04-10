@@ -6,7 +6,7 @@ from src.stl_loader import load_stl, get_mesh_info
 class TestSTLLoader(unittest.TestCase):
     def setUp(self):
         # Path to the test STL file
-        self.valid_stl_path = os.path.join("models", "stretchrite3.stl")
+        self.valid_stl_path = os.path.join("models", "cuboid.stl")
         self.invalid_stl_path = os.path.join("models", "nonexistent.stl")
     
     def test_load_valid_stl(self):
