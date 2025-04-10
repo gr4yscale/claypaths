@@ -113,48 +113,24 @@ def slice_at_height(stl_mesh, z_height):
         
         # Debug information
         print(f"  Found {len(segments)} segments at z={z_height:.2f}")
-
-        # Attempt to form polygons using polygonize
-        polygons_raw = list(polygonize(merged_lines))
-        polygons = []
-
-        if polygons_raw:
-            # If polygonize returns results, combine them using unary_union
-            # This handles cases where polygonize might return separate outer/inner boundaries
-            combined_geometry = unary_union(polygons_raw)
-            if isinstance(combined_geometry, Polygon):
-                polygons = [combined_geometry]
-            elif isinstance(combined_geometry, MultiPolygon):
-                polygons = list(combined_geometry.geoms)
-            else:
-                print(f"  Warning: Unexpected geometry type after unary_union: {type(combined_geometry)}")
-                polygons = [] # Fallback to empty if union result is weird
-        else:
-            # Fallback: If polygonize created nothing, try a small buffer on the lines
-            # Use a very small buffer to minimize distortion
-            print(f"  Polygonize failed, attempting buffer fallback...")
-            try:
-                buffered = merged_lines.buffer(1e-6, join_style=2) # MITRE join style
-                if isinstance(buffered, Polygon):
-                    polygons = [buffered]
-                elif isinstance(buffered, MultiPolygon):
-                    polygons = list(buffered.geoms)
-            except Exception as buffer_err:
-                 print(f"  Buffer fallback also failed: {buffer_err}")
-                 polygons = [] # Ensure polygons is empty list on failure
-
-        # Final validation and cleanup
-        valid_polygons = [p for p in polygons if p.is_valid and not p.is_empty]
-
-        print(f"  Created {len(valid_polygons)} valid polygons at z={z_height:.2f}")
-        return valid_polygons
+        
+        # Try to form polygons
+        polygons = list(polygonize(merged_lines))
+        
+        if not polygons:
+            # If no polygons were created, try an alternative approach
+            # Sometimes segments don't perfectly connect due to floating point issues
+            # We can buffer them slightly to help them connect
+            buffered = merged_lines.buffer(0.001)
+            if isinstance(buffered, Polygon):
+                polygons = [buffered]
+            elif isinstance(buffered, MultiPolygon):
+                polygons = list(buffered.geoms)
+        
+        print(f"  Created {len(polygons)} polygons at z={z_height:.2f}")
+        return polygons
     except Exception as e:
-        print(f"Error during polygon creation at z={z_height:.2f}: {e}")
-        # Optionally plot problematic segments for debugging
-        # fig, ax = plt.subplots()
-        # for seg in segments: ax.plot(*seg.xy, 'r-')
-        # plt.title(f"Problem Segments at z={z_height:.2f}")
-        # plt.show()
+        print(f"Error creating polygons: {e}")
         return []
 
 def visualize_layer(layer_contours, layer_num, z_height):

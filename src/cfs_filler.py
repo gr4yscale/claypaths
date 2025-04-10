@@ -34,20 +34,17 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4):
     i = 1
     while True:
         offset_distance = (i - 0.5) * toolpath_width
-        # Perform negative buffer (inward offset) directly from the original region
+        # Perform negative buffer (inward offset)
         try:
-            # Apply the negative buffer directly to the original region for this offset level
-            buffered_region = region.buffer(-offset_distance, join_style=2) # MITRE join style
+            # Use a small positive buffer first to handle potential self-intersections near the boundary
+            # Then apply the negative buffer
+            buffered_region = current_offset_region.buffer(1e-6).buffer(-offset_distance, join_style=2) # MITRE join style
         except Exception as e:
              print(f"  Error during buffering at offset {offset_distance}: {e}")
              break # Stop if buffering fails
 
-        # Add area check for debugging
-        area = buffered_region.area
-        print(f"  Offset {offset_distance}: Area before check = {area:.6f}")
-
-        if buffered_region.is_empty or not buffered_region.is_valid or area < 1e-9: # Added small area check
-            print(f"  Offset {offset_distance} resulted in empty, invalid, or near-zero area geometry. Stopping.")
+        if buffered_region.is_empty or not buffered_region.is_valid:
+            print(f"  Offset {offset_distance} resulted in empty or invalid geometry. Stopping.")
             break
 
         # Handle MultiPolygons - each polygon is a contour c_i,j
@@ -78,20 +75,13 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4):
         print(f"  Generated {len(level_contours)} contour(s) at level i={i} (offset={offset_distance:.3f})")
 
         # Prepare for next iteration - use the boundary of the current buffer
-        # We need the boundary to calculate the *next* offset relative to the *original* boundary.
+        # We need the boundary to calculate the *next* offset relative to the *original* boundary
         # The paper implies offsetting from the original boundary ∂R each time.
-        # The buffer operation above already uses the original 'region'.
+        # Let's recalculate the offset from the original region boundary for the next step.
         i += 1
-        # No need to update current_offset_region as we always buffer from the original 'region'.
+        # We don't update current_offset_region here, as the next offset is also from the original boundary.
 
     print(f"Total iso-contours generated (excluding boundary): {len(iso_contours)}")
-
-    # If no iso-contours could be generated, the region is too small for this toolpath width
-    if not iso_contours:
-        print(f"  Region is too small or thin to generate any iso-contours with width {toolpath_width}. Cannot generate fill.")
-        # Optionally plot the original region for debugging
-        # plot_contours_and_mst([{'polygon': region, 'i': 0, 'j': 0, 'id': 'c_0_0'}], None, toolpath_width)
-        return None
 
     # Add the original boundary as c_0,0 (or adjust indexing based on paper c_1,1 = ∂R)
     # Let's follow the paper: c_1,1 is the boundary ∂R. Adjust 'i' index accordingly.
