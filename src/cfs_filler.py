@@ -197,11 +197,61 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4) -> Optional[
         else:
              print("  Computing MST on the full graph.")
              spiral_contour_tree = nx.minimum_spanning_tree(connectivity_graph, weight='weight')
+             mst_nodes = connectivity_graph.number_of_nodes()
 
         print(f"  MST computed with {spiral_contour_tree.number_of_nodes()} nodes and {spiral_contour_tree.number_of_edges()} edges.")
 
+        # --- MST Validation ---
+        print("  Validating MST properties...")
+        is_valid_mst = True
+        num_nodes = spiral_contour_tree.number_of_nodes()
+        num_edges = spiral_contour_tree.number_of_edges()
+        expected_edges = num_nodes - 1 if num_nodes > 0 else 0
+
+        if num_nodes == 0:
+             print("    - Validation Skipped: MST is empty.")
+             is_valid_mst = False # Treat empty MST as invalid for further processing
+        else:
+            # 1. Check number of edges
+            if num_edges != expected_edges:
+                print(f"    - FAIL: Incorrect number of edges. Expected {expected_edges}, found {num_edges}.")
+                is_valid_mst = False
+            else:
+                print(f"    - OK: Correct number of edges ({num_edges}).")
+
+            # 2. Check if it's a tree (connected and acyclic)
+            # Note: nx.minimum_spanning_tree should always return a tree if the input graph component is connected.
+            # is_tree checks for both connectivity and acyclicity within the context of the MST graph itself.
+            if not nx.is_tree(spiral_contour_tree):
+                 # Check specific reasons if it's not a tree
+                 if not nx.is_connected(spiral_contour_tree):
+                     print("    - FAIL: MST is not connected.")
+                     is_valid_mst = False
+                 # Check for cycles (shouldn't happen with MST algorithm)
+                 try:
+                     cycle = nx.find_cycle(spiral_contour_tree)
+                     print(f"    - FAIL: MST contains a cycle: {cycle}")
+                     is_valid_mst = False
+                 except nx.NetworkXNoCycle:
+                     # If it's not connected, it might also report no cycle here.
+                     # The primary issue is likely connectivity if is_tree failed but no cycle found.
+                     if is_valid_mst: # Only print OK if no other failure occurred
+                          print("    - OK: MST is acyclic.")
+            else:
+                 print("    - OK: MST is a valid tree (connected and acyclic).")
+
+            # 3. Check total weight (optional info)
+            total_weight = spiral_contour_tree.size(weight='weight')
+            print(f"    - Info: Total weight of MST: {total_weight:.4f}")
+
+        if not is_valid_mst:
+             print("  Error: MST validation failed. Cannot proceed with CFS generation.")
+             plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width, None) # Plot potentially problematic MST
+             return None
+        # --- End MST Validation ---
+
     except Exception as e:
-        print(f"Error computing MST: {e}")
+        print(f"Error computing or validating MST: {e}")
         # Consider visualization or further debugging here
         # plot_graph(connectivity_graph, "Connectivity Graph")
         return None
@@ -212,7 +262,8 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4) -> Optional[
     mst_structure = identify_mst_structure(spiral_contour_tree, boundary_node['id'])
     if not mst_structure:
         print("Error: Failed to analyze MST structure.")
-        plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width)
+        # Pass None for mst_structure as it failed to be created
+        plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width, None)
         return None
 
     branch_points = mst_structure['branch_points']
@@ -243,12 +294,13 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4) -> Optional[
         print(f"  CFS path generated successfully (Length: {final_path.length:.2f}).")
         # Optional: Simplify or smooth the path (Step 9)
         # final_path = final_path.simplify(tolerance=toolpath_width / 10)
-        plot_contours_and_path(all_contours_data, spiral_contour_tree, final_path, toolpath_width) # Visualize result
+        # Pass mst_structure to the plotting function
+        plot_contours_and_path(all_contours_data, spiral_contour_tree, final_path, toolpath_width, mst_structure) # Visualize result
         return final_path
     else:
         print("  CFS path generation incomplete or failed in Step 7.")
-        # For debugging, visualize the contours and MST
-        plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width)
+        # For debugging, visualize the contours and MST structure
+        plot_contours_and_mst(all_contours_data, spiral_contour_tree, toolpath_width, mst_structure)
         return None
 
 
@@ -968,10 +1020,15 @@ def merge_paths_at_branch(branch_node_id: str,
 # Visualization Helpers
 # --------------------------------------------------------------------------
 
-def plot_contours_and_mst(contours_data: List[ContourData], mst: Optional[MST], toolpath_width: float):
+def plot_contours_and_mst(contours_data: List[ContourData],
+                          mst: Optional[MST],
+                          toolpath_width: float,
+                          mst_structure: Optional[Dict[str, Any]]):
+    """ Plots contours and the MST, highlighting paths and special nodes if structure is provided. """
     fig, ax = plt.subplots(figsize=(10, 10))
     cmap = plt.get_cmap('viridis')
     num_levels = max(cd['i'] for cd in contours_data) if contours_data else 1
+    contours_map = {cd['id']: cd for cd in contours_data} # Helper map
 
     # Plot contours
     for cd in contours_data:
@@ -985,25 +1042,72 @@ def plot_contours_and_mst(contours_data: List[ContourData], mst: Optional[MST], 
             ax.plot(x_int, y_int, color=color, linestyle='--', linewidth=1)
         # Plot centroid for node reference
         centroid = poly.centroid
-        ax.plot(centroid.x, centroid.y, 'o', color=color, markersize=3)
-        ax.text(centroid.x, centroid.y, cd['id'], fontsize=8, color='black')
+        centroid = poly.centroid
+        # Default node style
+        marker = '.'
+        markersize = 4
+        markercolor = 'black'
+        # Highlight special nodes if structure provided
+        if mst_structure:
+            if cd['id'] == mst_structure['root_node_id']:
+                marker = 'H' # Hexagon for root
+                markersize = 8
+                markercolor = 'purple'
+            elif cd['id'] in mst_structure['branch_points']:
+                marker = 's' # Square for branch
+                markersize = 7
+                markercolor = 'red'
+            elif cd['id'] in mst_structure['leaf_nodes']:
+                marker = '^' # Triangle for leaf
+                markersize = 7
+                markercolor = 'green'
+
+        ax.plot(centroid.x, centroid.y, marker=marker, color=markercolor, markersize=markersize, linestyle='None')
+        ax.text(centroid.x + 0.1, centroid.y + 0.1, cd['id'], fontsize=8, color='black', ha='left', va='bottom')
 
 
     # Plot MST edges
     if mst:
+        plotted_edges = set() # Keep track of plotted edges to avoid duplicates
+        # Plot path edges first if structure is available
+        if mst_structure:
+            path_cmap = plt.get_cmap('cool') # Use a different colormap for paths
+            num_paths = len(mst_structure['paths'])
+            for i, path in enumerate(mst_structure['paths']):
+                path_color = path_cmap(i / max(1, num_paths))
+                for k in range(len(path) - 1):
+                    u, v = path[k], path[k+1]
+                    edge = tuple(sorted((u, v)))
+                    if edge not in plotted_edges:
+                        node_u_data = contours_map.get(u)
+                        node_v_data = contours_map.get(v)
+                        if node_u_data and node_v_data:
+                            centroid_u = node_u_data['polygon'].centroid
+                            centroid_v = node_v_data['polygon'].centroid
+                            ax.plot([centroid_u.x, centroid_v.x], [centroid_u.y, centroid_v.y],
+                                    color=path_color, linewidth=1.5, alpha=0.9, linestyle='-')
+                            plotted_edges.add(edge)
+
+        # Plot any remaining MST edges (shouldn't be any if paths cover all, but just in case)
         for u, v, data in mst.edges(data=True):
-            node_u_data = next((cd for cd in contours_data if cd['id'] == u), None)
-            node_v_data = next((cd for cd in contours_data if cd['id'] == v), None)
-            if node_u_data and node_v_data:
-                poly_u = node_u_data['polygon']
-                poly_v = node_v_data['polygon']
-                # Draw line between centroids
-                centroid_u = poly_u.centroid
-                centroid_v = poly_v.centroid
-                ax.plot([centroid_u.x, centroid_v.x], [centroid_u.y, centroid_v.y], 'r-', linewidth=0.8, alpha=0.7)
+             edge = tuple(sorted((u, v)))
+             if edge not in plotted_edges:
+                 node_u_data = contours_map.get(u)
+                 node_v_data = contours_map.get(v)
+                 if node_u_data and node_v_data:
+                     centroid_u = node_u_data['polygon'].centroid
+                     centroid_v = node_v_data['polygon'].centroid
+                     # Plot these with a default style (e.g., dashed grey)
+                     ax.plot([centroid_u.x, centroid_v.x], [centroid_u.y, centroid_v.y],
+                             color='grey', linewidth=0.8, alpha=0.7, linestyle=':')
+                     plotted_edges.add(edge)
+
 
     ax.set_aspect('equal', adjustable='box')
-    ax.set_title(f"Iso-Contours and MST (w={toolpath_width})")
+    title = f"Iso-Contours and MST (w={toolpath_width})"
+    if mst_structure:
+        title += " - Structure Highlighted"
+    ax.set_title(title)
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     # plt.legend() # Legend might get too crowded
@@ -1011,11 +1115,16 @@ def plot_contours_and_mst(contours_data: List[ContourData], mst: Optional[MST], 
     plt.show(block=False) # Use non-blocking show for potentially multiple plots
 
 
-def plot_contours_and_path(contours_data: List[ContourData], mst: Optional[MST], final_path: Optional[LineString], toolpath_width: float):
-    """ Plots contours, optionally the MST, and the final generated path. """
+def plot_contours_and_path(contours_data: List[ContourData],
+                           mst: Optional[MST],
+                           final_path: Optional[LineString],
+                           toolpath_width: float,
+                           mst_structure: Optional[Dict[str, Any]]): # Add mst_structure parameter
+    """ Plots contours, the MST structure (if provided), and the final generated path. """
     fig, ax = plt.subplots(figsize=(10, 10))
     cmap = plt.get_cmap('viridis')
     num_levels = max(cd['i'] for cd in contours_data) if contours_data else 1
+    contours_map = {cd['id']: cd for cd in contours_data} # Helper map
 
     # Plot contours (lightly)
     for cd in contours_data:
@@ -1043,12 +1152,13 @@ def plot_contours_and_path(contours_data: List[ContourData], mst: Optional[MST],
     # Plot the final path
     if final_path and isinstance(final_path, LineString) and not final_path.is_empty:
         x_path, y_path = final_path.xy
-        ax.plot(x_path, y_path, 'b-', linewidth=1.0, label='Generated Path') # Blue, solid line
+        ax.plot(x_path, y_path, 'b-', linewidth=1.2, label='Generated Path', zorder=10) # Blue, solid line, ensure it's on top
 
     ax.set_aspect('equal', adjustable='box')
-    ax.set_title(f"Contours and Generated Path (w={toolpath_width})")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
+    title = f"Contours, MST Structure, and Generated Path (w={toolpath_width})"
+    ax.set_title(title)
+    ax.set_xlabel("X (mm)")
+    ax.set_ylabel("Y (mm)")
     if final_path:
         ax.legend()
     plt.grid(True, linestyle=':', alpha=0.5)
