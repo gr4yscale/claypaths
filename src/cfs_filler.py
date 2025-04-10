@@ -10,13 +10,14 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def generate_cfs_fill(region, toolpath_width):
+def generate_cfs_fill(region, toolpath_width, visualize_steps=False):
     """
     Generate a Continuous Fermat Spiral (CFS) fill for a 2D region.
     
     Args:
         region (Polygon): The 2D region to fill
         toolpath_width (float): The desired spacing between adjacent path segments
+        visualize_steps (bool): Whether to visualize intermediate steps
         
     Returns:
         LineString: The continuous toolpath as a LineString
@@ -31,14 +32,26 @@ def generate_cfs_fill(region, toolpath_width):
         logger.error("Failed to generate iso-contours")
         return None
     
+    # Visualize Step 5: Iso-contours
+    if visualize_steps:
+        visualize_iso_contours(region, contours)
+    
     # Step 2: Build connectivity graph and MST
     graph, mst = build_spiral_contour_tree(contours)
     if not mst:
         logger.error("Failed to build spiral-contour tree")
         return None
     
+    # Visualize Step 6: Spiral contour tree
+    if visualize_steps:
+        visualize_spiral_contour_tree(region, contours, graph, mst)
+    
     # Step 3: Perform recursive rerouting to generate the final path
     final_path = perform_recursive_rerouting(contours, mst, toolpath_width)
+    
+    # Visualize Step 7: Recursive rerouting
+    if visualize_steps and final_path:
+        visualize_recursive_rerouting(region, contours, mst, final_path)
     
     return final_path
 
@@ -681,6 +694,188 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
     except Exception as e:
         print(f"Error during recursive rerouting: {e}")
         return None
+
+def visualize_iso_contours(region, contours, title="Iso-Contours (Step 5)"):
+    """
+    Visualize the iso-contours (Step 5 of the algorithm).
+    
+    Args:
+        region (Polygon): The original region
+        contours (dict): The generated iso-contours
+        title (str): Title for the plot
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Plot the original region
+    x, y = region.exterior.xy
+    ax.plot(x, y, 'k-', linewidth=2, label='Region Boundary')
+    
+    # Plot holes if any
+    for interior in region.interiors:
+        x, y = interior.xy
+        ax.plot(x, y, 'k-', linewidth=2)
+    
+    # Plot contours with different colors for each level
+    colors = plt.cm.viridis(np.linspace(0, 1, len(contours) + 1))
+    for i, level in enumerate(sorted(contours.keys())):
+        for j, contour in enumerate(contours[level]):
+            x, y = contour.exterior.xy
+            ax.plot(x, y, '-', color=colors[i], linewidth=1.5, 
+                   label=f'Level {level}' if j == 0 else "")
+            
+            # Add level and index labels
+            centroid = contour.centroid
+            ax.text(centroid.x, centroid.y, f"({level},{j})", 
+                   ha='center', va='center', fontsize=8)
+    
+    ax.set_aspect('equal')
+    ax.set_title(title)
+    
+    # Create a custom legend with unique entries
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='best')
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_spiral_contour_tree(region, contours, graph, mst, title="Spiral Contour Tree (Step 6)"):
+    """
+    Visualize the spiral contour tree (Step 6 of the algorithm).
+    
+    Args:
+        region (Polygon): The original region
+        contours (dict): The generated iso-contours
+        graph (nx.Graph): The connectivity graph
+        mst (nx.Graph): The minimum spanning tree
+        title (str): Title for the plot
+    """
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # Plot the original region
+    x, y = region.exterior.xy
+    ax.plot(x, y, 'k-', linewidth=1, alpha=0.3)
+    
+    # Plot contours
+    for level in contours:
+        for j, contour in enumerate(contours[level]):
+            x, y = contour.exterior.xy
+            ax.plot(x, y, 'g-', linewidth=0.5, alpha=0.3)
+            
+            # Add node labels
+            centroid = contour.centroid
+            ax.text(centroid.x, centroid.y, f"({level},{j})", 
+                   ha='center', va='center', fontsize=8)
+    
+    # Create a position dictionary for the graph nodes
+    pos = {}
+    for node in graph.nodes():
+        level, idx = node
+        if level in contours and idx < len(contours[level]):
+            contour = contours[level][idx]
+            pos[node] = (contour.centroid.x, contour.centroid.y)
+    
+    # Plot all edges in the graph as light gray
+    for u, v in graph.edges():
+        if u in pos and v in pos:
+            ax.plot([pos[u][0], pos[v][0]], [pos[u][1], pos[v][1]], 
+                   'gray', linestyle=':', linewidth=0.5, alpha=0.5)
+    
+    # Plot MST edges as bold blue
+    for u, v in mst.edges():
+        if u in pos and v in pos:
+            ax.plot([pos[u][0], pos[v][0]], [pos[u][1], pos[v][1]], 
+                   'blue', linestyle='-', linewidth=2)
+    
+    # Plot nodes
+    for node in graph.nodes():
+        if node in pos:
+            if node in mst:
+                ax.plot(pos[node][0], pos[node][1], 'ro', markersize=8)  # MST nodes in red
+            else:
+                ax.plot(pos[node][0], pos[node][1], 'go', markersize=6)  # Other nodes in green
+    
+    ax.set_aspect('equal')
+    ax.set_title(title)
+    
+    # Add legend
+    ax.plot([], [], 'ro', markersize=8, label='MST Nodes')
+    ax.plot([], [], 'go', markersize=6, label='Other Nodes')
+    ax.plot([], [], 'blue', linestyle='-', linewidth=2, label='MST Edges')
+    ax.plot([], [], 'gray', linestyle=':', linewidth=0.5, label='Graph Edges')
+    ax.legend(loc='best')
+    
+    plt.tight_layout()
+    plt.show()
+
+def visualize_recursive_rerouting(region, contours, mst, final_path, title="Recursive Rerouting (Step 7)"):
+    """
+    Visualize the recursive rerouting result (Step 7 of the algorithm).
+    
+    Args:
+        region (Polygon): The original region
+        contours (dict): The generated iso-contours
+        mst (nx.Graph): The minimum spanning tree
+        final_path (LineString): The final continuous path
+        title (str): Title for the plot
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Plot the original region
+    x, y = region.exterior.xy
+    ax.plot(x, y, 'k-', linewidth=2, label='Region Boundary')
+    
+    # Plot contours with light colors
+    for level in contours:
+        for contour in contours[level]:
+            x, y = contour.exterior.xy
+            ax.plot(x, y, 'g--', linewidth=0.5, alpha=0.3)
+    
+    # Plot the final path with a color gradient to show direction
+    if final_path:
+        points = np.array(final_path.coords)
+        segments = np.array([points[:-1], points[1:]]).transpose(1, 0, 2)
+        
+        # Create a line collection for better visualization of direction
+        from matplotlib.collections import LineCollection
+        
+        # Create a colormap that transitions from green to red
+        cmap = plt.cm.winter
+        colors = np.linspace(0, 1, len(segments))
+        
+        lc = LineCollection(segments, cmap=cmap, norm=plt.Normalize(0, 1), linewidth=2)
+        lc.set_array(colors)
+        ax.add_collection(lc)
+        
+        # Mark start and end points
+        ax.plot(points[0, 0], points[0, 1], 'go', markersize=8, label='Start')
+        ax.plot(points[-1, 0], points[-1, 1], 'ro', markersize=8, label='End')
+        
+        # Add arrows to show direction
+        arrow_indices = np.linspace(0, len(points) - 2, min(20, len(points) - 1)).astype(int)
+        for i in arrow_indices:
+            p1, p2 = points[i], points[i + 1]
+            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+            length = np.sqrt(dx**2 + dy**2)
+            if length > 0:
+                ax.arrow(p1[0], p1[1], dx * 0.8, dy * 0.8, 
+                        head_width=0.3, head_length=0.5, fc='blue', ec='blue', 
+                        length_includes_head=True, alpha=0.7)
+    
+    ax.set_aspect('equal')
+    ax.set_title(title)
+    
+    # Add a colorbar to show the direction of the path
+    if final_path:
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, orientation='vertical', label='Path Direction')
+        cbar.set_ticks([0, 1])
+        cbar.set_ticklabels(['Start', 'End'])
+    
+    ax.legend(loc='best')
+    plt.tight_layout()
+    plt.show()
 
 def visualize_cfs_fill(region, toolpath, toolpath_width=None, contours=None):
     """

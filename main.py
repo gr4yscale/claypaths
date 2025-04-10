@@ -81,7 +81,7 @@ def main():
                 contour_poly = sample_layer[0]
                 
                 print(f"\nGenerating CFS fill for layer {sample_layer_idx+1}, polygon 1")
-                cfs_result = generate_cfs_fill(contour_poly, toolpath_width)
+                cfs_result = generate_cfs_fill(contour_poly, toolpath_width, True)
                 
                 if cfs_result:
                     print(f"Successfully generated CFS fill with {len(cfs_result.coords)} points")
