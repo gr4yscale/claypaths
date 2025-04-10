@@ -204,7 +204,7 @@ def get_line_segment_coords(contour, start_point, end_point, clockwise=True):
     Get coordinates for a line segment along a contour from start to end point.
     
     Args:
-        contour (Polygon): The contour
+        contour (Polygon or LineString): The contour
         start_point (Point): The start point on the contour
         end_point (Point): The end point on the contour
         clockwise (bool): Direction to travel along the contour
@@ -212,7 +212,21 @@ def get_line_segment_coords(contour, start_point, end_point, clockwise=True):
     Returns:
         list: List of coordinate tuples for the segment
     """
-    exterior = contour.exterior
+    # Check if contour is valid
+    if contour is None:
+        print(f"Error: Contour is None")
+        return None
+    
+    # Get the exterior LineString from the contour
+    if hasattr(contour, 'exterior'):
+        # If contour is a Polygon
+        exterior = contour.exterior
+    elif isinstance(contour, LineString):
+        # If contour is already a LineString
+        exterior = contour
+    else:
+        print(f"Error: Unsupported contour type: {type(contour)}")
+        return None
     
     # Project points onto the contour
     start_dist = exterior.project(start_point)
@@ -280,7 +294,20 @@ def generate_fermat_spiral_segment(polygons, exteriors, innermost_contour_idx, o
     iteration = 0
     while current_contour_idx >= innermost_contour_idx and iteration < max_iterations:
         iteration += 1
-        current_contour = exteriors[current_contour_idx]
+        # Get the current contour - make sure we're accessing it correctly
+        if current_contour_idx in exteriors:
+            if isinstance(exteriors[current_contour_idx], dict):
+                # If exteriors is a nested dictionary, we need the first item
+                if len(exteriors[current_contour_idx]) > 0:
+                    current_contour = exteriors[current_contour_idx][0]
+                else:
+                    print(f"      Error: No contours found at level {current_contour_idx}")
+                    return None
+            else:
+                current_contour = exteriors[current_contour_idx]
+        else:
+            print(f"      Error: Contour index {current_contour_idx} not found in exteriors")
+            return None
         
         # 1. Determine the target point for this contour segment
         if current_contour_idx == innermost_contour_idx:
@@ -335,7 +362,20 @@ def generate_fermat_spiral_segment(polygons, exteriors, innermost_contour_idx, o
     prev_target_point_on_inner = None # Store target from previous (inner) contour iteration
     while current_contour_idx <= outermost_contour_idx and iteration < max_iterations:
         iteration += 1
-        current_contour = exteriors[current_contour_idx]
+        # Get the current contour - make sure we're accessing it correctly
+        if current_contour_idx in exteriors:
+            if isinstance(exteriors[current_contour_idx], dict):
+                # If exteriors is a nested dictionary, we need the first item
+                if len(exteriors[current_contour_idx]) > 0:
+                    current_contour = exteriors[current_contour_idx][0]
+                else:
+                    print(f"      Error: No contours found at level {current_contour_idx}")
+                    return None
+            else:
+                current_contour = exteriors[current_contour_idx]
+        else:
+            print(f"      Error: Contour index {current_contour_idx} not found in exteriors")
+            return None
         
         # 1. Determine the target point for this contour segment
         target_point = None
@@ -457,9 +497,11 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
     polygons = {}
     exteriors = {}
     
+    print(f"Processing {len(contours)} contour levels")
     for level in contours:
         polygons[level] = {}
         exteriors[level] = {}
+        print(f"  Level {level}: {len(contours[level])} contours")
         for j, contour in enumerate(contours[level]):
             polygons[level][j] = contour
             exteriors[level][j] = contour.exterior
@@ -496,7 +538,12 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
     processed_paths = {}
     
     # Process nodes bottom-up (leaves to root)
-    def _process_node(node_id, parent_id):
+    def _process_node(node_id, parent_id, depth=0):
+        # Prevent excessive recursion
+        if depth > 100:  # Set a reasonable limit
+            print(f"Warning: Maximum recursion depth reached ({depth}). Terminating branch.")
+            return None
+            
         node = id_to_node[node_id]
         level, idx = node
         
@@ -526,7 +573,7 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
         # For non-leaf nodes, process children first
         child_paths = []
         for child_id in children:
-            child_path = _process_node(child_id, node_id)
+            child_path = _process_node(child_id, node_id, depth+1)
             if child_path:
                 child_paths.append((child_id, child_path))
         
@@ -615,10 +662,15 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
         return final_path
     
     # Start processing from the root
-    root_node_id = node_to_id[root_node]
-    final_path = _process_node(root_node_id, None)
-    
-    return final_path
+    try:
+        root_node_id = node_to_id[root_node]
+        print(f"Starting recursive rerouting from root node: {root_node}")
+        final_path = _process_node(root_node_id, None, 0)
+        
+        return final_path
+    except Exception as e:
+        print(f"Error during recursive rerouting: {e}")
+        return None
 
 def visualize_cfs_fill(region, toolpath, toolpath_width=None, contours=None):
     """
