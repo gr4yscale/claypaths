@@ -1,4 +1,5 @@
 import os
+import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.cfs_filler import generate_cfs_fill # Import the CFS filler function
@@ -85,11 +86,28 @@ def main():
                         continue
 
                     # Call the CFS filler for each polygon contour
-                    # Currently, this will print progress and plot the contours/MST
+                    # Call the CFS filler for each polygon contour
                     cfs_result = generate_cfs_fill(contour_poly, toolpath_width)
                     if cfs_result:
-                        print(f"    -> CFS Path generated (length: {cfs_result.length:.2f})")
-                        # TODO: Store or visualize the actual path later
+                        print(f"    -> CFS Path generated (length: {cfs_result.length:.2f}). Visualizing...")
+                        # Visualize the contour and the generated path
+                        fig, ax = plt.subplots(figsize=(8, 8))
+                        # Plot original contour
+                        x_orig, y_orig = contour_poly.exterior.xy
+                        ax.plot(x_orig, y_orig, 'k--', linewidth=0.8, label='Original Contour')
+                        for interior in contour_poly.interiors:
+                            x_int, y_int = interior.xy
+                            ax.plot(x_int, y_int, 'k:', linewidth=0.8)
+                        # Plot CFS path
+                        x_path, y_path = cfs_result.xy
+                        ax.plot(x_path, y_path, 'b-', linewidth=1.0, label='CFS Path')
+                        ax.set_aspect('equal', adjustable='box')
+                        ax.set_title(f"Layer {i+1}, Contour {j+1} - CFS Fill (w={toolpath_width})")
+                        ax.set_xlabel("X (mm)")
+                        ax.set_ylabel("Y (mm)")
+                        ax.legend()
+                        plt.grid(True, linestyle=':', alpha=0.5)
+                        plt.show(block=False) # Show plot non-blockingly
                     else:
                         print(f"    -> CFS Path generation incomplete for Contour {j+1}.")
 
@@ -101,6 +119,10 @@ def main():
         print(f"Failed to load STL file: {stl_file_path}")
         print("Please ensure the file exists and is a valid STL file.")
 
+    # Keep all plot windows open until manually closed
+    if plt.get_fignums(): # Check if any figures were created
+        print("\nDisplaying generated plots. Close plot windows to exit.")
+        plt.show() # Blocking call to display all figures
 
 if __name__ == "__main__":
     main()

@@ -416,7 +416,7 @@ def perform_recursive_rerouting(mst: MST,
                                 mst_structure: Dict[str, Any]) -> Optional[LineString]:
     """
     Performs the recursive rerouting process based on the MST structure.
-    (Currently a placeholder implementation).
+    Initiates the bottom-up traversal.
 
     Args:
         mst (MST): The Minimum Spanning Tree.
@@ -429,56 +429,155 @@ def perform_recursive_rerouting(mst: MST,
     """
     print("  Starting Step 7: Recursive Rerouting...")
     root_node_id = mst_structure['root_node_id']
-    paths = mst_structure['paths']
-    branch_points = mst_structure['branch_points']
     contours_map = {cd['id']: cd for cd in contours_data}
+    processed_paths: Dict[Tuple[str, str], Optional[LineString]] = {} # Store paths for edges (u,v)
 
-    # This requires a bottom-up traversal strategy (from leaves/inner contours towards root)
-    # We need to process spirallable paths and merge them at branch points.
+    # Define the recursive helper function
+    def _process_node(node_id: str, parent_id: Optional[str]) -> None:
+        """ Recursively processes nodes bottom-up. """
+        print(f"    Processing node: {node_id} (called from parent: {parent_id})")
+        neighbors = list(mst.neighbors(node_id))
 
-    # Placeholder: Just connect centroids of the first path found as a dummy output
+        # Process children first (nodes other than the parent)
+        children = [neighbor for neighbor in neighbors if neighbor != parent_id]
+        for child_id in children:
+            # Check if the path from child to node has already been processed (shouldn't happen in tree)
+            edge = tuple(sorted((child_id, node_id)))
+            if edge not in processed_paths:
+                 _process_node(child_id, node_id)
+            # else: already processed due to traversal from other side?
+
+        # --- All children processed, now process this node ---
+        print(f"    Node {node_id}: All children processed. Merging/Generating path towards parent {parent_id}.")
+
+        # Collect paths coming from children
+        incoming_segments: Dict[str, Optional[LineString]] = {}
+        for child_id in children:
+            edge = tuple(sorted((child_id, node_id)))
+            incoming_segments[child_id] = processed_paths.get(edge)
+            # if incoming_segments[child_id] is None:
+            #     print(f"      Warning: No path segment found for edge {edge} from child {child_id}")
+
+        # Determine action based on node type and context
+        node_degree = mst.degree(node_id)
+        is_leaf = node_id in mst_structure['leaf_nodes']
+        is_branch = node_id in mst_structure['branch_points']
+        is_root = node_id == root_node_id
+
+        # Path segment to be generated/merged for the edge connecting node_id to parent_id
+        outgoing_segment: Optional[LineString] = None
+
+        if is_leaf:
+            # Generate spiral for the single path segment connecting leaf to its parent
+            print(f"      Node {node_id} is a leaf. Generating initial spiral segment towards {parent_id}.")
+            # The 'path' is just [node_id, parent_id]
+            # Need to call generate_spiral_segment (placeholder for now)
+            path_nodes = [node_id, parent_id] if parent_id else [node_id] # Handle case if leaf is somehow root?
+            if len(path_nodes) > 1:
+                 outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width)
+                 if outgoing_segment:
+                     print(f"        -> Generated (placeholder) segment for leaf {node_id}")
+                 else:
+                     print(f"        -> Failed to generate (placeholder) segment for leaf {node_id}")
+
+        elif is_branch:
+            # Merge incoming paths from children and generate outgoing path towards parent
+            print(f"      Node {node_id} is a branch point. Merging {len(incoming_segments)} segments.")
+            # Need to call merge_paths_at_branch (placeholder for now)
+            # This function should handle merging children paths and creating the segment towards the parent.
+            outgoing_segment = merge_paths_at_branch(node_id, parent_id, incoming_segments, contours_map, toolpath_width)
+            if outgoing_segment:
+                 print(f"        -> Merged (placeholder) segments at branch {node_id}")
+            else:
+                 print(f"        -> Failed to merge (placeholder) segments at branch {node_id}")
+
+        else: # Degree 2 node (part of a path)
+            # Should extend the path coming from the single child towards the parent
+            # This logic is implicitly handled by generate_spiral_segment when called for a multi-node path,
+            # or by merge_paths_at_branch if it handles degree=2 nodes.
+            # Let's assume generate_spiral_segment handles path sequences.
+            # The recursive calls should naturally build up the path.
+            # If called from parent P, process child C. Child C calls back up.
+            # When processing node N between P and C:
+            #   - Get segment from C->N (from processed_paths).
+            #   - Need to generate/extend segment N->P.
+            # This structure seems slightly off. Maybe process edges instead of nodes?
+
+            # --- Alternative: Process paths identified in Step 6 ---
+            # The current recursive structure might be complex to map directly to spiral/merge calls.
+            # Let's stick to the placeholder for now and refine the recursive logic later if needed.
+            # For now, the placeholder below will execute after the traversal attempt.
+            print(f"      Node {node_id} is a path node (degree 2). Logic TBD.")
+            # Placeholder: For now, just pass up the segment from the child if exactly one exists
+            valid_incoming = [seg for seg in incoming_segments.values() if seg]
+            if len(valid_incoming) == 1:
+                 outgoing_segment = valid_incoming[0] # Pass through
+                 print(f"        -> Passing through segment from child at path node {node_id}")
+            elif len(valid_incoming) > 1:
+                 print(f"        -> Warning: Multiple incoming segments at path node {node_id}. Merging needed?")
+                 # Maybe call merge here too?
+                 outgoing_segment = merge_paths_at_branch(node_id, parent_id, incoming_segments, contours_map, toolpath_width)
+
+            else:
+                 print(f"        -> No valid incoming segment at path node {node_id}.")
+
+
+        # Store the generated segment for the edge connecting to the parent
+        if parent_id:
+            edge = tuple(sorted((node_id, parent_id)))
+            processed_paths[edge] = outgoing_segment
+            print(f"      Stored path for edge {edge}")
+        elif is_root and outgoing_segment:
+             # If we processed the root and got a final segment (e.g., from merging its children)
+             print(f"    Root node {node_id} processed. Final segment obtained.")
+             # This might be the final path, or needs finalization.
+             pass
+
+
+    # --- Start the recursive processing ---
+    # Handle the case of a single node (only the boundary)
+    if mst.number_of_nodes() == 1 and root_node_id in contours_map:
+        print("  Only boundary contour exists. No fill path needed/possible.")
+        return None
+    elif mst.number_of_nodes() == 0:
+         print("  MST is empty. Cannot generate path.")
+         return None
+
+    # Start recursion from the root. The function processes children first.
+    print(f"  Initiating recursive processing from root: {root_node_id}")
+    _process_node(root_node_id, None)
+
+    # --- Retrieve the final path ---
+    # The final path should be the result of processing the root node or merging its direct children.
+    # The current recursive structure stores paths on edges. We need to assemble them.
+    # This recursive structure needs refinement to properly return the final combined path.
+
+    # --- Fallback to original placeholder for now ---
+    print("  (Recursive structure outlined, but using original placeholder logic for path generation)")
+    paths = mst_structure['paths']
     if paths:
-        first_path_nodes = paths[0]
+        # Find a path involving the root, if possible, otherwise take the first.
+        chosen_path_nodes = paths[0]
+        for p in paths:
+            if root_node_id in p:
+                chosen_path_nodes = p
+                break
+
         path_coords = []
-        for node_id in first_path_nodes:
+        for node_id in chosen_path_nodes:
             contour_data = contours_map.get(node_id)
             if contour_data:
                 path_coords.append(contour_data['polygon'].centroid.coords[0])
 
         if len(path_coords) >= 2:
-            print("  (Placeholder: Returning LineString connecting centroids of the first identified path)")
+            print("  (Placeholder: Returning LineString connecting centroids of a path)")
             return LineString(path_coords)
         else:
-             print("  (Placeholder: Not enough points in the first path to create a LineString)")
+             print("  (Placeholder: Not enough points in the chosen path to create a LineString)")
              return None
     else:
         print("  No spirallable paths found to generate even a placeholder path.")
-        # Handle the case of a single contour (just the boundary)
-        if len(contours_map) == 1 and root_node_id in contours_map:
-             print("  Only boundary contour exists. No fill path needed/possible.")
-             # Returning the exterior might be an option, but CFS is for filling.
-             # return contours_map[root_node_id]['polygon'].exterior
-             return None # No fill path
         return None
-
-    # --- Actual Implementation Sketch ---
-    # 1. Data Structure: Need to store generated path segments (LineStrings) associated with MST edges or nodes.
-    # 2. Traversal Order: Determine a processing order, likely starting from paths connected to leaves.
-    #    - Could use a topological sort if viewed as a directed tree from root, then reverse?
-    #    - Or, recursive function starting from root, processing children first.
-    # 3. Process Spirallable Paths:
-    #    - For each path in mst_structure['paths']:
-    #        - Call `generate_spiral_segment(path_nodes, contours_map, toolpath_width)`
-    #        - This function needs the detailed Fermat spiral logic (inward/outward links, B(p), N(p), rerouting points).
-    #        - It should return a LineString representing the spiral for that segment, connecting the entry/exit points defined by MST connections.
-    # 4. Process Branch Points:
-    #    - When the traversal reaches a branch point where all incoming child paths have been processed:
-    #        - Call `merge_paths_at_branch(branch_node_id, incoming_paths, contours_map, toolpath_width)`
-    #        - This function needs logic to connect the ends of the incoming spiral segments smoothly within the contour of the branch node. Connection points depend on the MST edges (connecting segments O).
-    # 5. Final Path: The result of processing the root node should be the complete path.
-
-    # --- Placeholder Return ---
-    # return None # Replace with actual result
 
 
 def generate_spiral_segment(path_nodes: PathSegment,
@@ -506,7 +605,8 @@ def generate_spiral_segment(path_nodes: PathSegment,
 
 
 def merge_paths_at_branch(branch_node_id: str,
-                          incoming_segments: Dict[str, LineString], # Keyed by child node ID
+                          parent_node_id: Optional[str], # The node towards which the merged path should exit
+                          incoming_segments: Dict[str, Optional[LineString]], # Keyed by child node ID
                           contours_map: Dict[str, ContourData],
                           toolpath_width: float) -> Optional[LineString]:
     """
@@ -630,12 +730,12 @@ if __name__ == '__main__':
     # Create a sample polygon (e.g., a rounded rectangle)
     # sample_polygon = Polygon([(0, 0), (10, 0), (10, 5), (0, 5)]).buffer(1, join_style=2).buffer(-1, join_style=2) # Simple rectangle
     # sample_polygon = Polygon([(0,0), (10,0), (10,10), (0,10)]).buffer(2).buffer(-1) # Rounded square
-    # sample_polygon = Polygon([(0,0), (20,0), (15,10), (5,10)]).buffer(1.5, join_style=2) # Trapezoid-like shape
+    sample_polygon = Polygon([(0,0), (20,0), (15,10), (5,10)]).buffer(1.5, join_style=2) # Trapezoid-like shape
     
     # More complex shape - circle with an off-center hole
-    outer = Polygon([(0,0), (10,0), (10,10), (0,10)]).buffer(5) # Outer circle approx
-    inner = Polygon([(3,3), (7,3), (7,7), (3,7)]).buffer(1) # Inner hole approx
-    sample_polygon = outer.difference(inner)
+    #outer = Polygon([(0,0), (10,0), (10,10), (0,10)]).buffer(5) # Outer circle approx
+    #inner = Polygon([(3,3), (7,3), (7,7), (3,7)]).buffer(1) # Inner hole approx
+    #sample_polygon = outer.difference(inner)
 
 
     print("Testing CFS Fill Generation...")
