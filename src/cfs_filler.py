@@ -506,6 +506,11 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
             polygons[level][j] = contour
             exteriors[level][j] = contour.exterior
     
+    # Check if the MST is empty
+    if len(list(mst.nodes())) == 0:
+        print("Error: Empty MST provided")
+        return None
+        
     # Find the root node (typically (1,0) for the outermost contour)
     root_node = None
     for node in mst.nodes():
@@ -516,7 +521,12 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
     
     if not root_node:
         # If no (1,0) node, use the node with the lowest level
-        root_node = min(mst.nodes(), key=lambda x: x[0])
+        try:
+            root_node = min(mst.nodes(), key=lambda x: x[0])
+        except ValueError:
+            # This should not happen due to the earlier check, but just in case
+            print("Error: Could not find a root node in the MST")
+            return None
     
     # Create a directed graph for the traversal
     directed_mst = nx.DiGraph()
