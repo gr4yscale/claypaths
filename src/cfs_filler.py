@@ -591,17 +591,17 @@ def perform_recursive_rerouting(mst: MST,
                 # Let's call generate_spiral_segment for the [node_id, parent_id] link
                 # and then try to combine it with the incoming segment.
                 print(f"        -> Extending segment from child {child_id} towards parent {parent_id}.")
-                start_override = Point(incoming_segment.coords[-1]) # Endpoint of incoming path
-                print(f"        -> Using start override: {start_override.wkt[:30]}")
+                # start_override = Point(incoming_segment.coords[-1]) # Endpoint of incoming path - REMOVED
+                # print(f"        -> Using start override: {start_override.wkt[:30]}") # REMOVED
 
                 path_nodes_extension = [node_id, parent_id] if parent_id else [node_id]
                 if len(path_nodes_extension) > 1:
-                    # Pass the endpoint of the incoming segment as the override start point
+                    # Call generate_spiral_segment without the override
                     extension_segment = generate_spiral_segment(
                         path_nodes_extension,
                         contours_map,
-                        toolpath_width,
-                        start_point_override=start_override
+                        toolpath_width
+                        # start_point_override=start_override # REMOVED
                     )
                     if extension_segment:
                         # Combine incoming_segment and extension_segment
@@ -635,8 +635,8 @@ def perform_recursive_rerouting(mst: MST,
                 print(f"        -> Warning: No incoming segment from child {child_id} at degree-2 node {node_id}. Generating new segment towards {parent_id}.")
                 path_nodes = [node_id, parent_id] if parent_id else [node_id]
                 if len(path_nodes) > 1:
-                     # No incoming segment, so no start point override
-                     outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width, start_point_override=None)
+                     # No incoming segment, call without override
+                     outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width) # Removed override
                      if outgoing_segment:
                           print(f"        -> Generated new segment directly (Length: {outgoing_segment.length:.2f})")
                      else:
@@ -670,8 +670,7 @@ def perform_recursive_rerouting(mst: MST,
 
 def generate_spiral_segment(path_nodes: PathSegment,
                             contours_map: Dict[str, ContourData],
-                            toolpath_width: float,
-                            start_point_override: Optional[Point] = None) -> Optional[LineString]:
+                            toolpath_width: float) -> Optional[LineString]:
     """
     Generates a path segment connecting a sequence of contours (a path in the MST).
     (Simplified Implementation: Connects nearest points and traces contour exteriors).
@@ -681,9 +680,7 @@ def generate_spiral_segment(path_nodes: PathSegment,
                                   Assumed to be ordered from inner to outer contour generally.
         contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
         toolpath_width (float): Toolpath width 'w'.
-        start_point_override (Optional[Point]): If provided, use this as the starting point
-                                                 on the first contour (node_id_inner) instead
-                                                 of tracing the whole contour.
+        # start_point_override removed
 
     Returns:
         Optional[LineString]: The generated path segment, or None if failed.
@@ -737,36 +734,30 @@ def generate_spiral_segment(path_nodes: PathSegment,
         # --- Add segment on the inner contour ---
         # Determine the starting point for the segment on the inner contour
         start_point_on_inner = None
-        if i == 0 and start_point_override: # First iteration and override provided
-             start_point_on_inner = start_point_override
-             print(f"    Starting segment on {node_id_inner} from override point {start_point_on_inner.wkt[:30]}...")
-        elif i > 0: # Subsequent iterations use the connection point from the previous outer contour
+        # Logic using start_point_override removed
+        if i > 0: # Subsequent iterations use the connection point from the previous outer contour
              start_point_on_inner = last_connection_point_on_outer # From previous iteration's p_outer
              print(f"    Connecting from previous point on {node_id_inner} ({start_point_on_inner.wkt[:30]}) to nearest point {p_inner.wkt[:30]}...")
-        # Else (i == 0 and no override): This is the leaf/innermost case handled below
+        # Else (i == 0): This is the leaf/innermost case handled below
 
-        if start_point_on_inner: # Connect from known start point to p_inner
+        if start_point_on_inner: # Connect from known start point (from previous iteration) to p_inner
             segment_coords_inner = get_line_segment_coords(poly_inner.exterior, start_point_on_inner, p_inner)
             if segment_coords_inner:
                 # Avoid duplicate points if segments connect
                 # Check distance from overall last point to start of new segment
                 if all_segment_coords and Point(all_segment_coords[-1]).distance(Point(segment_coords_inner[0])) < 1e-3:
                      all_segment_coords.extend(segment_coords_inner[1:])
-                # Check distance from override point if it's the very start
-                elif i == 0 and start_point_override and start_point_override.distance(Point(segment_coords_inner[0])) < 1e-3:
-                     all_segment_coords.extend(segment_coords_inner) # Add the whole segment including start point
+                # Removed check for start_point_override
                 else:
                      all_segment_coords.extend(segment_coords_inner)
             else:
                  print(f"    Warning: Could not get segment on inner contour {node_id_inner}. Adding jump.")
                  # Add jump if segment fails
                  if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
-                      # Add jump if segment fails
-                      if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
-                           all_segment_coords.extend(get_coords(p_inner))
+                      all_segment_coords.extend(get_coords(p_inner))
 
-        elif i == 0 and not start_point_override:
-            # First segment (i=0) and no override: This is the innermost contour (leaf case).
+        elif i == 0: # Removed 'and not start_point_override'
+            # First segment (i=0): This is the innermost contour (leaf case).
             # Simplification: Trace the *entire* inner contour exterior starting near p_inner.
             print(f"    Tracing entire innermost contour {node_id_inner} starting near {p_inner.wkt[:30]}.")
             inner_coords = get_coords(poly_inner.exterior)
