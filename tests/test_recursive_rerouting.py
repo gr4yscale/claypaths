@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+import networkx as nx
 from shapely.geometry import Polygon, LineString
 import sys
 import os
@@ -63,7 +64,7 @@ def test_perform_recursive_rerouting_empty():
     """Test recursive rerouting with empty inputs."""
     # Create empty contours and MST
     contours = {}
-    mst = None
+    mst = nx.Graph()  # Empty graph instead of None
     
     # Perform recursive rerouting
     final_path = perform_recursive_rerouting(contours, mst, 1.0)
