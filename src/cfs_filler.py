@@ -1,5 +1,5 @@
 from shapely.geometry import Polygon, MultiPolygon, LineString, Point
-from shapely.ops import unary_union, nearest_points
+from shapely.ops import unary_union, nearest_points, substring # Import substring
 import matplotlib.pyplot as plt
 import networkx as nx
 import math
@@ -253,6 +253,97 @@ def generate_cfs_fill(region: Polygon, toolpath_width: float = 0.4) -> Optional[
 
 
 # --------------------------------------------------------------------------
+# Geometric Helper Functions
+# --------------------------------------------------------------------------
+
+def get_coords(geom) -> List[Tuple[float, float]]:
+    """Get coordinates from Point, LineString, Polygon exterior/interiors."""
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, Point):
+        return list(geom.coords)
+    elif isinstance(geom, LineString):
+        return list(geom.coords)
+    elif isinstance(geom, Polygon):
+        coords = list(geom.exterior.coords)
+        # Note: Ignoring interior coordinates for path generation for now
+        return coords
+    elif isinstance(geom, MultiPolygon):
+        # Handle MultiPolygon - maybe return coords of the largest polygon?
+        largest_poly = max(geom.geoms, key=lambda p: p.area)
+        return list(largest_poly.exterior.coords)
+    return []
+
+def find_point_index(line: LineString, point: Point) -> int:
+    """Find the index of the vertex on the line closest to the point."""
+    min_dist = float('inf')
+    closest_idx = -1
+    if line is None or line.is_empty or point is None or point.is_empty:
+        return -1
+    line_coords = list(line.coords)
+    if not line_coords: return -1
+
+    for i, coord in enumerate(line_coords):
+        dist = point.distance(Point(coord))
+        if dist < min_dist:
+            min_dist = dist
+            closest_idx = i
+    return closest_idx
+
+def get_line_segment_coords(line: LineString, p_start: Point, p_end: Point) -> List[Tuple[float, float]]:
+    """
+    Get coordinates of a LineString segment between two points projected onto the line.
+    Uses shapely.substring for potentially better accuracy, especially on rings.
+    """
+    if line is None or line.is_empty or p_start is None or p_start.is_empty or p_end is None or p_end.is_empty:
+        return []
+    if not isinstance(line, LineString):
+        print(f"Warning: get_line_segment_coords expected LineString, got {type(line)}")
+        return []
+
+    try:
+        start_dist = line.project(p_start)
+        end_dist = line.project(p_end)
+
+        # Handle potential floating point inaccuracies near ends
+        tolerance = 1e-9
+        if abs(start_dist - end_dist) < tolerance:
+             # Start and end points project to the same location
+             return [get_coords(line.interpolate(start_dist))]
+
+        if line.is_ring:
+            if abs(start_dist - end_dist) > line.length - tolerance:
+                 # Points are effectively the same but distances are at opposite ends
+                 return [get_coords(line.interpolate(start_dist))]
+
+            if start_dist <= end_dist:
+                 sub = substring(line, start_dist, end_dist)
+                 return get_coords(sub)
+            else: # Wraps around the ring
+                 sub1 = substring(line, start_dist, line.length)
+                 sub2 = substring(line, 0, end_dist)
+                 # Combine coords, avoiding duplicate point if possible
+                 coords1 = get_coords(sub1)
+                 coords2 = get_coords(sub2)
+                 if coords1 and coords2 and Point(coords1[-1]).distance(Point(coords2[0])) < tolerance:
+                     return coords1 + coords2[1:]
+                 else:
+                     return coords1 + coords2
+        else: # Simple line
+             # Ensure start_dist <= end_dist for substring
+             if start_dist > end_dist:
+                  start_dist, end_dist = end_dist, start_dist
+             sub = substring(line, start_dist, end_dist)
+             return get_coords(sub)
+
+    except Exception as e:
+         print(f"Error using substring (start={start_dist:.2f}, end={end_dist:.2f}, len={line.length:.2f}): {e}. Returning empty list.")
+         # Fallback: return just the start and end points projected onto the line
+         # return [get_coords(line.interpolate(start_dist)), get_coords(line.interpolate(end_dist))]
+         return []
+
+
+# --------------------------------------------------------------------------
 # Helper Functions for CFS Algorithm Steps
 # --------------------------------------------------------------------------
 
@@ -430,33 +521,28 @@ def perform_recursive_rerouting(mst: MST,
     print("  Starting Step 7: Recursive Rerouting...")
     root_node_id = mst_structure['root_node_id']
     contours_map = {cd['id']: cd for cd in contours_data}
-    processed_paths: Dict[Tuple[str, str], Optional[LineString]] = {} # Store paths for edges (u,v)
+    # processed_paths: Dict[Tuple[str, str], Optional[LineString]] = {} # No longer needed with recursive return
 
     # Define the recursive helper function
-    def _process_node(node_id: str, parent_id: Optional[str]) -> None:
-        """ Recursively processes nodes bottom-up. """
+    def _process_node(node_id: str, parent_id: Optional[str]) -> Optional[LineString]:
+        """
+        Recursively processes nodes bottom-up.
+        Generates/merges the path segment leading towards the parent_id.
+        Returns the generated LineString segment or None.
+        """
         print(f"    Processing node: {node_id} (called from parent: {parent_id})")
         neighbors = list(mst.neighbors(node_id))
 
         # Process children first (nodes other than the parent)
         children = [neighbor for neighbor in neighbors if neighbor != parent_id]
+        child_segments: Dict[str, Optional[LineString]] = {}
         for child_id in children:
-            # Check if the path from child to node has already been processed (shouldn't happen in tree)
-            edge = tuple(sorted((child_id, node_id)))
-            if edge not in processed_paths:
-                 _process_node(child_id, node_id)
-            # else: already processed due to traversal from other side?
+            # Recursive call returns the path segment generated from the child towards node_id
+            child_segments[child_id] = _process_node(child_id, node_id)
 
         # --- All children processed, now process this node ---
         print(f"    Node {node_id}: All children processed. Merging/Generating path towards parent {parent_id}.")
-
-        # Collect paths coming from children
-        incoming_segments: Dict[str, Optional[LineString]] = {}
-        for child_id in children:
-            edge = tuple(sorted((child_id, node_id)))
-            incoming_segments[child_id] = processed_paths.get(edge)
-            # if incoming_segments[child_id] is None:
-            #     print(f"      Warning: No path segment found for edge {edge} from child {child_id}")
+        # We have the segments from children in child_segments.
 
         # Determine action based on node type and context
         node_degree = mst.degree(node_id)
@@ -471,67 +557,81 @@ def perform_recursive_rerouting(mst: MST,
             # Generate spiral for the single path segment connecting leaf to its parent
             print(f"      Node {node_id} is a leaf. Generating initial spiral segment towards {parent_id}.")
             # The 'path' is just [node_id, parent_id]
-            # Need to call generate_spiral_segment (placeholder for now)
-            path_nodes = [node_id, parent_id] if parent_id else [node_id] # Handle case if leaf is somehow root?
+            # Generate spiral for the single path segment connecting leaf to its parent
+            print(f"      Node {node_id} is a leaf. Generating initial spiral segment towards {parent_id}.")
+            path_nodes = [node_id, parent_id] if parent_id else [node_id]
             if len(path_nodes) > 1:
+                 # Call the (simplified) spiral generation function
                  outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width)
                  if outgoing_segment:
-                     print(f"        -> Generated (placeholder) segment for leaf {node_id}")
+                     print(f"        -> Generated segment for leaf {node_id} (Length: {outgoing_segment.length:.2f})")
                  else:
-                     print(f"        -> Failed to generate (placeholder) segment for leaf {node_id}")
+                     print(f"        -> Failed to generate segment for leaf {node_id}")
 
         elif is_branch:
             # Merge incoming paths from children and generate outgoing path towards parent
-            print(f"      Node {node_id} is a branch point. Merging {len(incoming_segments)} segments.")
-            # Need to call merge_paths_at_branch (placeholder for now)
-            # This function should handle merging children paths and creating the segment towards the parent.
-            outgoing_segment = merge_paths_at_branch(node_id, parent_id, incoming_segments, contours_map, toolpath_width)
+            print(f"      Node {node_id} is a branch point. Merging {len(child_segments)} segments.")
+            # Pass the dictionary of segments received from children recursive calls
+            outgoing_segment = merge_paths_at_branch(node_id, parent_id, child_segments, contours_map, toolpath_width)
             if outgoing_segment:
-                 print(f"        -> Merged (placeholder) segments at branch {node_id}")
+                 print(f"        -> Merged segments at branch {node_id} (Result Length: {outgoing_segment.length:.2f})")
             else:
-                 print(f"        -> Failed to merge (placeholder) segments at branch {node_id}")
+                 print(f"        -> Failed to merge segments at branch {node_id}")
 
         else: # Degree 2 node (part of a path)
-            # Should extend the path coming from the single child towards the parent
-            # This logic is implicitly handled by generate_spiral_segment when called for a multi-node path,
-            # or by merge_paths_at_branch if it handles degree=2 nodes.
-            # Let's assume generate_spiral_segment handles path sequences.
-            # The recursive calls should naturally build up the path.
-            # If called from parent P, process child C. Child C calls back up.
-            # When processing node N between P and C:
-            #   - Get segment from C->N (from processed_paths).
-            #   - Need to generate/extend segment N->P.
-            # This structure seems slightly off. Maybe process edges instead of nodes?
+            print(f"      Node {node_id} is a path node (degree 2).")
+            # Should have exactly one child (neighbor that is not parent)
+            child_id = children[0] if children else None
+            incoming_segment = child_segments.get(child_id) if child_id else None
 
-            # --- Alternative: Process paths identified in Step 6 ---
-            # The current recursive structure might be complex to map directly to spiral/merge calls.
-            # Let's stick to the placeholder for now and refine the recursive logic later if needed.
-            # For now, the placeholder below will execute after the traversal attempt.
-            print(f"      Node {node_id} is a path node (degree 2). Logic TBD.")
-            # Placeholder: For now, just pass up the segment from the child if exactly one exists
-            valid_incoming = [seg for seg in incoming_segments.values() if seg]
-            if len(valid_incoming) == 1:
-                 outgoing_segment = valid_incoming[0] # Pass through
-                 print(f"        -> Passing through segment from child at path node {node_id}")
-            elif len(valid_incoming) > 1:
-                 print(f"        -> Warning: Multiple incoming segments at path node {node_id}. Merging needed?")
-                 # Maybe call merge here too?
-                 outgoing_segment = merge_paths_at_branch(node_id, parent_id, incoming_segments, contours_map, toolpath_width)
+            if incoming_segment:
+                # --- Extend the incoming path ---
+                # This is where the spiral logic should ideally continue the path.
+                # Our simplified generate_spiral_segment doesn't explicitly support extension.
+                # Let's call generate_spiral_segment for the [node_id, parent_id] link
+                # and then try to combine it with the incoming segment.
+                print(f"        -> Extending segment from child {child_id} towards parent {parent_id}.")
+                path_nodes_extension = [node_id, parent_id] if parent_id else [node_id]
+                if len(path_nodes_extension) > 1:
+                    extension_segment = generate_spiral_segment(path_nodes_extension, contours_map, toolpath_width)
+                    if extension_segment:
+                        # Combine incoming_segment and extension_segment
+                        # Ensure they connect head-to-tail. This requires knowing connection points.
+                        # Simplification: Assume they connect correctly for now.
+                        coords_incoming = get_coords(incoming_segment)
+                        coords_extension = get_coords(extension_segment)
+                        # Check if connection point matches (approximately)
+                        if coords_incoming and coords_extension and Point(coords_incoming[-1]).distance(Point(coords_extension[0])) < 1e-3:
+                             combined_coords = coords_incoming + coords_extension[1:]
+                        else:
+                             # If endpoints don't match, just append (will create a jump)
+                             print(f"        -> Warning: Endpoints don't match for path extension at {node_id}. Appending segments.")
+                             combined_coords = coords_incoming + coords_extension
 
+                        if len(combined_coords) >= 2:
+                             outgoing_segment = LineString(combined_coords)
+                             print(f"        -> Extended path segment (New Length: {outgoing_segment.length:.2f})")
+                        else:
+                             print(f"        -> Failed to combine segments for extension.")
+                             outgoing_segment = incoming_segment # Fallback to just incoming
+                    else:
+                         print(f"        -> Failed to generate extension segment. Passing incoming segment.")
+                         outgoing_segment = incoming_segment # Pass through if extension fails
+                else:
+                     outgoing_segment = incoming_segment # No parent, just return incoming
             else:
-                 print(f"        -> No valid incoming segment at path node {node_id}.")
+                # No incoming segment (e.g., child failed or is leaf), generate new segment if possible
+                print(f"        -> No incoming segment from child {child_id}. Generating new segment towards {parent_id}.")
+                path_nodes = [node_id, parent_id] if parent_id else [node_id]
+                if len(path_nodes) > 1:
+                     outgoing_segment = generate_spiral_segment(path_nodes, contours_map, toolpath_width)
+                     if outgoing_segment:
+                          print(f"        -> Generated new segment (Length: {outgoing_segment.length:.2f})")
+                     else:
+                          print(f"        -> Failed to generate new segment.")
 
-
-        # Store the generated segment for the edge connecting to the parent
-        if parent_id:
-            edge = tuple(sorted((node_id, parent_id)))
-            processed_paths[edge] = outgoing_segment
-            print(f"      Stored path for edge {edge}")
-        elif is_root and outgoing_segment:
-             # If we processed the root and got a final segment (e.g., from merging its children)
-             print(f"    Root node {node_id} processed. Final segment obtained.")
-             # This might be the final path, or needs finalization.
-             pass
+        # Return the segment generated/merged for the connection towards the parent
+        return outgoing_segment
 
 
     # --- Start the recursive processing ---
@@ -545,38 +645,14 @@ def perform_recursive_rerouting(mst: MST,
 
     # Start recursion from the root. The function processes children first.
     print(f"  Initiating recursive processing from root: {root_node_id}")
-    _process_node(root_node_id, None)
+    # The final path is the result returned by processing the root node
+    final_path = _process_node(root_node_id, None)
 
-    # --- Retrieve the final path ---
-    # The final path should be the result of processing the root node or merging its direct children.
-    # The current recursive structure stores paths on edges. We need to assemble them.
-    # This recursive structure needs refinement to properly return the final combined path.
-
-    # --- Fallback to original placeholder for now ---
-    print("  (Recursive structure outlined, but using original placeholder logic for path generation)")
-    paths = mst_structure['paths']
-    if paths:
-        # Find a path involving the root, if possible, otherwise take the first.
-        chosen_path_nodes = paths[0]
-        for p in paths:
-            if root_node_id in p:
-                chosen_path_nodes = p
-                break
-
-        path_coords = []
-        for node_id in chosen_path_nodes:
-            contour_data = contours_map.get(node_id)
-            if contour_data:
-                path_coords.append(contour_data['polygon'].centroid.coords[0])
-
-        if len(path_coords) >= 2:
-            print("  (Placeholder: Returning LineString connecting centroids of a path)")
-            return LineString(path_coords)
-        else:
-             print("  (Placeholder: Not enough points in the chosen path to create a LineString)")
-             return None
+    if final_path and isinstance(final_path, LineString) and not final_path.is_empty:
+        print(f"  Recursive rerouting completed. Final path length: {final_path.length:.2f}")
+        return final_path
     else:
-        print("  No spirallable paths found to generate even a placeholder path.")
+        print("  Recursive rerouting did not produce a valid final path.")
         return None
 
 
@@ -584,52 +660,288 @@ def generate_spiral_segment(path_nodes: PathSegment,
                             contours_map: Dict[str, ContourData],
                             toolpath_width: float) -> Optional[LineString]:
     """
-    Generates the Fermat spiral segment for a sequence of contours (a path in the MST).
-    (Placeholder - Requires detailed implementation based on Section 3 of the paper).
+    Generates a path segment connecting a sequence of contours (a path in the MST).
+    (Simplified Implementation: Connects nearest points and traces contour exteriors).
 
     Args:
-        path_nodes (PathSegment): List of contour node IDs forming the path.
+        path_nodes (PathSegment): List of contour node IDs forming the path (e.g., [leaf, ..., parent]).
+                                  Assumed to be ordered from inner to outer contour generally.
         contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
         toolpath_width (float): Toolpath width 'w'.
 
     Returns:
-        Optional[LineString]: The generated spiral segment, or None if failed.
+        Optional[LineString]: The generated path segment, or None if failed.
     """
-    print(f"  (Placeholder: Generate spiral segment for path: {' -> '.join(path_nodes)})")
-    # TODO: Implement Fermat spiral generation logic here.
-    # - Determine inward/outward links based on path direction.
-    # - Find rerouting points B(p), N(p) on adjacent contours.
-    # - Connect segments according to Figure 5 in the paper.
-    # - Needs robust geometric calculations (intersections, projections, etc.).
-    return None
+    print(f"  Generating segment for path: {' -> '.join(path_nodes)}")
+    if len(path_nodes) < 2:
+        print("    Path needs at least two nodes to generate a segment.")
+        return None
+
+    all_segment_coords = []
+    last_connection_point_on_outer = None
+
+    # Iterate through pairs of adjacent contours in the path
+    for i in range(len(path_nodes) - 1):
+        node_id_inner = path_nodes[i]
+        node_id_outer = path_nodes[i+1]
+
+        contour_inner_data = contours_map.get(node_id_inner)
+        contour_outer_data = contours_map.get(node_id_outer)
+
+        if not contour_inner_data or not contour_outer_data:
+            print(f"    Error: Contour data not found for {node_id_inner} or {node_id_outer}")
+            return None
+
+        poly_inner = contour_inner_data['polygon']
+        poly_outer = contour_outer_data['polygon']
+
+        if poly_inner.is_empty or poly_outer.is_empty:
+             print(f"    Error: Empty polygon for {node_id_inner} or {node_id_outer}")
+             return None
+
+        # Find nearest points between the exteriors (simplified connection points)
+        try:
+            nearest = nearest_points(poly_inner.exterior, poly_outer.exterior)
+            if not nearest or len(nearest) != 2:
+                 print(f"    Error: Could not find nearest points between {node_id_inner} and {node_id_outer}")
+                 # Fallback: use centroids?
+                 p_inner = poly_inner.centroid
+                 p_outer = poly_outer.centroid
+                 # return None
+            else:
+                 p_inner, p_outer = nearest[0], nearest[1]
+        except Exception as e:
+             print(f"    Error finding nearest points between {node_id_inner} and {node_id_outer}: {e}")
+             # Fallback: use centroids
+             p_inner = poly_inner.centroid
+             p_outer = poly_outer.centroid
+             # return None
+
+
+        # --- Add segment on the inner contour ---
+        # Connect from the previous segment's end point (on this contour) to p_inner.
+        start_point_on_inner = last_connection_point_on_outer # From previous iteration's p_outer
+        if start_point_on_inner:
+            print(f"    Connecting from previous point on {node_id_inner} to nearest point {p_inner.wkt[:30]}...")
+            segment_coords_inner = get_line_segment_coords(poly_inner.exterior, start_point_on_inner, p_inner)
+            if segment_coords_inner:
+                # Avoid duplicate points if segments connect
+                if all_segment_coords and Point(all_segment_coords[-1]).distance(Point(segment_coords_inner[0])) < 1e-3:
+                     all_segment_coords.extend(segment_coords_inner[1:])
+                else:
+                     all_segment_coords.extend(segment_coords_inner)
+            else:
+                 print(f"    Warning: Could not get segment on inner contour {node_id_inner}. Adding jump.")
+                 # Add jump if segment fails
+                 if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
+                      all_segment_coords.extend(get_coords(p_inner))
+
+        else:
+            # First segment in the path (innermost contour).
+            # Simplification: Trace the *entire* inner contour exterior starting near p_inner.
+            # This is not correct spiral behavior but fills space.
+            print(f"    Starting segment on innermost contour {node_id_inner}.")
+            inner_coords = get_coords(poly_inner.exterior)
+            if inner_coords:
+                 start_idx = find_point_index(poly_inner.exterior, p_inner)
+                 # Rotate coords to start near p_inner
+                 rotated_coords = inner_coords[start_idx:-1] + inner_coords[:start_idx+1]
+                 all_segment_coords.extend(rotated_coords)
+            else:
+                 print(f"    Warning: Could not get coordinates for inner contour {node_id_inner}")
+
+
+        # --- Add connecting line between contours ---
+        # Connect p_inner to p_outer
+        print(f"    Adding connection from {node_id_inner} ({p_inner.wkt[:30]}) to {node_id_outer} ({p_outer.wkt[:30]})")
+        # Avoid duplicate points
+        if not all_segment_coords or Point(all_segment_coords[-1]).distance(p_inner) > 1e-3:
+             all_segment_coords.extend(get_coords(p_inner))
+        if Point(all_segment_coords[-1]).distance(p_outer) > 1e-3:
+             all_segment_coords.extend(get_coords(p_outer))
+
+        # Update the connection point for the next iteration
+        last_connection_point_on_outer = p_outer
+
+
+    # After loop: Add the final segment on the outermost contour of this path
+    # Connect from last_connection_point_on_outer to ... where? The path ends here for this segment.
+    # Let's just leave the path ending at last_connection_point_on_outer.
+    # The connection to the next part of the overall path (e.g. at a branch or parent path node)
+    # will be handled by the calling function (_process_node or merge_paths_at_branch).
+
+    if len(all_segment_coords) >= 2:
+        # Clean up potential duplicate consecutive points
+        cleaned_coords = [all_segment_coords[0]]
+        for pt in all_segment_coords[1:]:
+            if Point(cleaned_coords[-1]).distance(Point(pt)) > 1e-6:
+                cleaned_coords.append(pt)
+
+        if len(cleaned_coords) >= 2:
+             return LineString(cleaned_coords)
+        else:
+             print("    Error: Not enough unique points generated for segment.")
+             return None
+    else:
+        print("    Error: Not enough points generated for segment.")
+        return None
 
 
 def merge_paths_at_branch(branch_node_id: str,
                           parent_node_id: Optional[str], # The node towards which the merged path should exit
-                          incoming_segments: Dict[str, Optional[LineString]], # Keyed by child node ID
+                          child_segments: Dict[str, Optional[LineString]], # Keyed by child node ID
                           contours_map: Dict[str, ContourData],
                           toolpath_width: float) -> Optional[LineString]:
     """
-    Merges multiple incoming spiral path segments at a branch point contour.
-    (Placeholder - Requires detailed implementation).
+    Merges multiple incoming path segments at a branch point contour.
+    (Simplified Implementation: Connects endpoints via branch centroid).
 
     Args:
         branch_node_id (str): The ID of the branch contour node.
-        incoming_segments (Dict[str, LineString]): Dictionary mapping the child node ID
-                                                   (from which the segment originates)
-                                                   to the LineString segment itself.
+        parent_node_id (Optional[str]): ID of the parent node in the MST (exit direction).
+        child_segments (Dict[str, Optional[LineString]]): Dict mapping child node ID to the
+                                                          path segment arriving from that child.
         contours_map (Dict[str, ContourData]): Map of node IDs to contour data.
         toolpath_width (float): Toolpath width 'w'.
 
     Returns:
-        Optional[LineString]: The merged path segment, or None if failed.
+        Optional[LineString]: The merged path segment leading towards the parent, or None if failed.
     """
-    print(f"  (Placeholder: Merge {len(incoming_segments)} segments at branch node {branch_node_id})")
-    # TODO: Implement path merging logic here.
-    # - Identify connection points on the branch contour based on MST edges (connecting segments O).
-    # - Connect the endpoints of the incoming_segments smoothly.
-    # - May involve generating short connecting paths within the branch contour polygon.
-    return None
+    print(f"  Merging {len(child_segments)} segments at branch node {branch_node_id} -> parent {parent_node_id}")
+
+    branch_contour_data = contours_map.get(branch_node_id)
+    if not branch_contour_data:
+        print(f"    Error: Branch contour data not found for {branch_node_id}")
+        return None
+    poly_branch = branch_contour_data['polygon']
+    if poly_branch.is_empty:
+        print(f"    Error: Branch polygon {branch_node_id} is empty.")
+        return None
+    branch_centroid = poly_branch.centroid
+
+    # Identify valid incoming segments and their endpoints
+    valid_incoming = {}
+    for child_id, segment in child_segments.items():
+        if segment and isinstance(segment, LineString) and not segment.is_empty:
+            # Assume the segment ends near the branch node
+            valid_incoming[child_id] = {'segment': segment, 'end_point': Point(segment.coords[-1])}
+        else:
+             print(f"    Warning: Invalid or missing segment from child {child_id}")
+
+    if not valid_incoming:
+        print("    Error: No valid incoming segments to merge.")
+        # If there's a parent, maybe generate a path just from centroid to parent connection?
+        return None
+
+    # Determine the exit point towards the parent (if exists)
+    exit_point = None
+    if parent_node_id:
+        parent_contour_data = contours_map.get(parent_node_id)
+        if parent_contour_data:
+            poly_parent = parent_contour_data['polygon']
+            if not poly_parent.is_empty:
+                # Find nearest point on branch contour to parent contour (simplified exit point)
+                nearest = nearest_points(poly_branch.exterior, poly_parent.exterior)
+                if nearest and len(nearest) == 2:
+                    exit_point = nearest[0] # Point on branch contour closest to parent
+                else:
+                     # Fallback: point on branch contour closest to parent centroid
+                     exit_point = nearest_points(poly_branch.exterior, poly_parent.centroid)[0]
+            else:
+                 print(f"    Warning: Parent polygon {parent_node_id} is empty.")
+        else:
+             print(f"    Warning: Parent contour data not found for {parent_node_id}")
+    if not exit_point:
+         # If no parent or parent invalid, use centroid as nominal exit? Or endpoint of one child?
+         print(f"    Warning: Could not determine exit point towards parent {parent_node_id}. Using centroid.")
+         exit_point = branch_centroid
+
+
+    # --- Combine paths (Simplified: connect all via centroid) ---
+    # Order of merging might matter for efficiency but not for this simple connection.
+    # We will connect: incoming_end -> centroid -> next_incoming_end -> centroid -> ... -> exit_point
+    all_merged_coords = []
+    last_point = None
+
+    # Process incoming segments one by one
+    processed_children = set()
+    current_child_id = list(valid_incoming.keys())[0] # Start with the first child
+
+    while len(processed_children) < len(valid_incoming):
+         if current_child_id in processed_children:
+             # Find next unprocessed child (shouldn't happen if logic is right)
+             found_next = False
+             for cid in valid_incoming:
+                 if cid not in processed_children:
+                     current_child_id = cid
+                     found_next = True
+                     break
+             if not found_next: break # All processed
+
+         data = valid_incoming[current_child_id]
+         segment = data['segment']
+         end_point = data['end_point'] # End point of the incoming segment
+
+         # Add the incoming segment coords
+         segment_coords = get_coords(segment)
+         if not all_merged_coords:
+             all_merged_coords.extend(segment_coords)
+         else:
+             # Try to connect smoothly, otherwise just append
+             if Point(all_merged_coords[-1]).distance(Point(segment_coords[0])) < 1e-3:
+                 all_merged_coords.extend(segment_coords[1:])
+             else:
+                 # This case implies the previous connection (via centroid) didn't end
+                 # where this segment starts. This indicates flaw in centroid connection logic.
+                 # For now, just append.
+                 print(f"    Warning: Mismatch connecting segments via centroid at branch {branch_node_id}.")
+                 all_merged_coords.extend(segment_coords)
+
+         last_point = Point(all_merged_coords[-1]) # Should be close to end_point
+
+         # Add connection from end_point to centroid
+         if last_point.distance(branch_centroid) > 1e-6:
+              all_merged_coords.extend(get_coords(branch_centroid))
+         last_point = branch_centroid
+         processed_children.add(current_child_id)
+
+         # Find the next child to connect to (simplification: just take the next unprocessed)
+         next_child_id = None
+         for cid in valid_incoming:
+             if cid not in processed_children:
+                 next_child_id = cid
+                 break
+
+         if next_child_id:
+              # Add connection from centroid to the start/end of the next child's segment
+              next_end_point = valid_incoming[next_child_id]['end_point']
+              # Connect centroid to that end point
+              if last_point.distance(next_end_point) > 1e-6:
+                   all_merged_coords.extend(get_coords(next_end_point))
+              last_point = next_end_point
+              current_child_id = next_child_id
+         # else: all children processed, loop will end.
+
+
+    # Finally, connect the last point (centroid) to the exit point
+    if last_point and exit_point and last_point.distance(exit_point) > 1e-6:
+         all_merged_coords.extend(get_coords(exit_point))
+
+    if len(all_merged_coords) >= 2:
+        # Clean up potential duplicate consecutive points
+        cleaned_coords = [all_merged_coords[0]]
+        for pt in all_merged_coords[1:]:
+            if Point(cleaned_coords[-1]).distance(Point(pt)) > 1e-6:
+                cleaned_coords.append(pt)
+
+        if len(cleaned_coords) >= 2:
+             return LineString(cleaned_coords)
+        else:
+             print("    Error: Not enough unique points generated for merged segment.")
+             return None
+    else:
+        print("    Error: Not enough points generated for merged segment.")
+        return None
 
 
 # --------------------------------------------------------------------------
