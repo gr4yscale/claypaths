@@ -2,6 +2,7 @@ import os
 import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
+from src.cfs_filler import generate_cfs_fill, visualize_cfs_fill
 
 def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
@@ -65,6 +66,33 @@ def main():
         # Optionally visualize the original layers again if needed
         print("\nVisualizing sample layers (original contours)...")
         visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
+        
+        # Step 3: Generate CFS fill for each layer
+        print("\nStep 3: Generating CFS fill for sample layers")
+        toolpath_width = 0.4  # Default toolpath width in mm
+        
+        # Process a sample layer
+        if layers and len(layers) > 0:
+            sample_layer_idx = 2
+            sample_layer = layers[sample_layer_idx]
+            
+            if sample_layer and len(sample_layer) > 0:
+                # Take the first polygon in the layer
+                contour_poly = sample_layer[0]
+                
+                print(f"\nGenerating CFS fill for layer {sample_layer_idx+1}, polygon 1")
+                cfs_result = generate_cfs_fill(contour_poly, toolpath_width)
+                
+                if cfs_result:
+                    print(f"Successfully generated CFS fill with {len(cfs_result.coords)} points")
+                    
+                    # Visualize the CFS fill
+                    print("\nVisualizing CFS fill...")
+                    visualize_cfs_fill(contour_poly, cfs_result, toolpath_width)
+                else:
+                    print("Failed to generate CFS fill for the layer")
+            else:
+                print(f"No valid polygons in layer {sample_layer_idx+1}")
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
