@@ -9,5 +9,6 @@ dependencies = [
     "matplotlib>=3.10.1",
     "numpy-stl>=3.2.0",
     "pygobject>=3.52.3",
+    "pytest>=8.3.5",
     "shapely>=2.1.0",
 ]
