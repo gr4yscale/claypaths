@@ -7,7 +7,36 @@ def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
     
     # Path to the test STL file
-    stl_file_path = os.path.join("models", "stretchrite3.stl")
+  
+
+    #confirmed working
+    #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+    #stl_file_path = os.path.join("models", "cuboid.stl")
+    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
+    #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
+    #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
+    #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
+
+
+    # complex shapes, problematic
+    # holes are detected as solid rather than the cuboid
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+
+    # cuboid detected as solid rather than cylinder
+    #stl_file_path = os.path.join("models", "cylinder-minus-cuboid.stl")
+
+    # cuboid inside which should be empty is detected as solid
+    #stl_file_path = os.path.join("models", "hollow-cuboid.stl")
+
+    # empty hex is detected as solid
+    #stl_file_path = os.path.join("models", "wrench.stl")
+    
+    # complex shapes, problematic
+    #stl_file_path = os.path.join("models", "u-shape.stl")
+    #stl_file_path = os.path.join("models", "l-shape.stl")
+    #stl_file_path = os.path.join("models", "rectangular-cuboid-with-hole.stl")
+    #stl_file_path = os.path.join("models", "cylinder-with-cone.stl")
     
     # Step 1: Load the STL file
     print(f"\nStep 1: Loading STL file from {stl_file_path}")
