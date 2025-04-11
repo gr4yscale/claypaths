@@ -64,8 +64,8 @@ def main():
         layers = slice_mesh(stl_mesh, layer_height)
         
         # Optionally visualize the original layers again if needed
-        print("\nVisualizing sample layers (original contours)...")
-        visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
+        #print("\nVisualizing sample layers (original contours)...")
+        #visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
         
         # Step 3: Generate region fill for each layer
         print("\nStep 3: Generating region fill for sample layers")
