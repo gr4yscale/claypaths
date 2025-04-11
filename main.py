@@ -2,17 +2,18 @@ import os
 import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
+from src.region_fill import generate_continuous_fill, visualize_fill_path
 
 def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
     
     # Paths to test STL files
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-    stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "t-shape.stl")
 
     #confirmed working
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-    #stl_file_path = os.path.join("models", "t-shape.stl")
+    stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "cuboid.stl")
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
@@ -55,7 +56,7 @@ def main():
         
         # Visualize the STL file (commented out)
         # print("\nVisualizing the STL mesh...")
-        visualize_stl(stl_mesh)
+        #visualize_stl(stl_mesh)
         
         # Step 2: Slice the model into layers
         print("\nStep 2: Slicing the model into layers")
@@ -66,9 +67,9 @@ def main():
         print("\nVisualizing sample layers (original contours)...")
         visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
         
-        # Step 3: Generate CFS fill for each layer
-        print("\nStep 3: Generating CFS fill for sample layers")
-        toolpath_width = 0.4  # Default toolpath width in mm
+        # Step 3: Generate region fill for each layer
+        print("\nStep 3: Generating region fill for sample layers")
+        toolpath_width = 1.0  # Default toolpath width in mm
         
         # Process a sample layer
         if layers and len(layers) > 0:
@@ -80,6 +81,17 @@ def main():
                 contour_poly = sample_layer[0]
                 
                 print(f"\nGenerating region fill for layer {sample_layer_idx+1}, polygon 1")
+                
+                # Generate continuous fill path for the polygon
+                fill_path = generate_continuous_fill(contour_poly, toolpath_width)
+                
+                if fill_path:
+                    print(f"Generated continuous fill path with {len(fill_path)} points")
+                    # Visualize the fill path
+                    visualize_fill_path(contour_poly, fill_path, 
+                                       f"Layer {sample_layer_idx+1} Continuous Fill Path")
+                else:
+                    print("Failed to generate fill path")
             else:
                 print(f"No valid polygons in layer {sample_layer_idx+1}")
 
