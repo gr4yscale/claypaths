@@ -10,7 +10,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def generate_cfs_fill(region, toolpath_width, visualize_steps=False):
+def generate_cfs_fill(region, toolpath_width, visualize_steps=True, debug=True):
     """
     Generate a Continuous Fermat Spiral (CFS) fill for a 2D region.
     
@@ -18,42 +18,66 @@ def generate_cfs_fill(region, toolpath_width, visualize_steps=False):
         region (Polygon): The 2D region to fill
         toolpath_width (float): The desired spacing between adjacent path segments
         visualize_steps (bool): Whether to visualize intermediate steps
+        debug (bool): Whether to print detailed debugging information
         
     Returns:
-        LineString: The continuous toolpath as a LineString
+        tuple: (final_path, contours, mst) - The continuous toolpath, contours and MST
     """
     if not isinstance(region, Polygon) or not region.is_valid:
         logger.error("Input must be a valid Polygon")
-        return None
+        return None, None, None
     
     # Step 1: Generate iso-contours (offset curves)
+    logger.info("Step 5: Generating iso-contours...")
     contours = generate_iso_contours(region, toolpath_width)
     if not contours:
         logger.error("Failed to generate iso-contours")
-        return None
+        return None, None, None
+    
+    if debug:
+        logger.info(f"Generated {len(contours)} contour levels")
+        for level in contours:
+            logger.info(f"  Level {level}: {len(contours[level])} contours")
     
     # Visualize Step 5: Iso-contours
     if visualize_steps:
         visualize_iso_contours(region, contours)
     
     # Step 2: Build connectivity graph and MST
+    logger.info("Step 6: Building spiral contour tree...")
     graph, mst = build_spiral_contour_tree(contours)
     if not mst:
         logger.error("Failed to build spiral-contour tree")
-        return None
+        return None, None, None
+    
+    if debug:
+        logger.info(f"Graph has {len(graph.nodes())} nodes and {len(graph.edges())} edges")
+        logger.info(f"MST has {len(mst.nodes())} nodes and {len(mst.edges())} edges")
+        logger.info("MST Nodes:")
+        for node in sorted(mst.nodes()):
+            logger.info(f"  {node} - Level: {node[0]}, Index: {node[1]}")
+        logger.info("MST Edges:")
+        for edge in mst.edges(data=True):
+            logger.info(f"  {edge[0]} -> {edge[1]}, Weight: {edge[2].get('weight', 'N/A')}")
     
     # Visualize Step 6: Spiral contour tree
     if visualize_steps:
         visualize_spiral_contour_tree(region, contours, graph, mst)
     
     # Step 3: Perform recursive rerouting to generate the final path
+    logger.info("Step 7: Performing recursive rerouting...")
     final_path = perform_recursive_rerouting(contours, mst, toolpath_width)
     
-    # Visualize Step 7: Recursive rerouting
-    if visualize_steps and final_path:
-        visualize_recursive_rerouting(region, contours, mst, final_path)
+    if final_path:
+        logger.info(f"Generated continuous path with {len(final_path.coords)} points")
+        
+        # Visualize Step 7: Recursive rerouting
+        if visualize_steps:
+            visualize_recursive_rerouting(region, contours, mst, final_path)
+    else:
+        logger.error("Failed to generate continuous path through recursive rerouting")
     
-    return final_path
+    return final_path, contours, mst
 
 def generate_iso_contours(region, toolpath_width):
     """
@@ -102,12 +126,13 @@ def generate_iso_contours(region, toolpath_width):
     logger.info(f"Generated {level} contour levels")
     return contours
 
-def build_spiral_contour_tree(contours):
+def build_spiral_contour_tree(contours, debug=True):
     """
     Build a connectivity graph and minimum spanning tree for the contours.
     
     Args:
         contours (dict): Dictionary mapping contour levels to lists of Polygons
+        debug (bool): Whether to print detailed debugging information
         
     Returns:
         tuple: (connectivity graph, minimum spanning tree)
@@ -115,14 +140,28 @@ def build_spiral_contour_tree(contours):
     # Create a graph where nodes are contours
     G = nx.Graph()
     
+    if debug:
+        logger.info("Building connectivity graph...")
+    
     # Add nodes for each contour
     for level in contours:
         for j, contour in enumerate(contours[level]):
             node_id = (level, j)
-            G.add_node(node_id, contour=contour, level=level)
+            area = contour.area
+            G.add_node(node_id, contour=contour, level=level, area=area)
+            if debug and j == 0:
+                logger.info(f"  Added nodes for level {level} contours")
+    
+    if debug:
+        logger.info(f"Added {len(G.nodes())} nodes to the graph")
     
     # Add edges between contours at adjacent levels
+    edge_count = 0
     for level in range(1, len(contours)):
+        if debug:
+            logger.info(f"  Processing connections between levels {level} and {level+1}")
+        
+        level_edge_count = 0
         for j, contour_outer in enumerate(contours[level]):
             for k, contour_inner in enumerate(contours[level+1]):
                 # Check if inner contour is contained within outer contour
@@ -135,16 +174,92 @@ def build_spiral_contour_tree(contours):
                         weight = connecting_segment.length
                         G.add_edge((level, j), (level+1, k), weight=weight, 
                                   connecting_segment=connecting_segment)
+                        edge_count += 1
+                        level_edge_count += 1
+                        
+                        if debug and level_edge_count <= 3:  # Limit logging to first few edges
+                            logger.info(f"    Added edge ({level},{j}) -> ({level+1},{k}) with weight {weight:.2f}")
+        
+        if debug:
+            logger.info(f"    Added {level_edge_count} edges between levels {level} and {level+1}")
+    
+    if debug:
+        logger.info(f"Added {edge_count} edges to the graph")
+        
+        # Check for isolated nodes
+        isolated_nodes = list(nx.isolates(G))
+        if isolated_nodes:
+            logger.warning(f"Found {len(isolated_nodes)} isolated nodes in the graph")
+            for node in isolated_nodes[:5]:  # Show first 5
+                logger.warning(f"  Isolated node: {node}")
+            if len(isolated_nodes) > 5:
+                logger.warning(f"  ... and {len(isolated_nodes) - 5} more")
     
     # Compute the minimum spanning tree starting from the root (1,0)
     try:
-        # Ensure the graph is connected
+        # Check if the graph is connected
         if not nx.is_connected(G):
+            if debug:
+                components = list(nx.connected_components(G))
+                logger.warning(f"Graph is not connected. Found {len(components)} connected components")
+                for i, component in enumerate(components[:3]):  # Show first 3
+                    logger.warning(f"  Component {i+1}: {len(component)} nodes")
+                if len(components) > 3:
+                    logger.warning(f"  ... and {len(components) - 3} more components")
+            
             largest_cc = max(nx.connected_components(G), key=len)
-            G = G.subgraph(largest_cc).copy()
+            G_connected = G.subgraph(largest_cc).copy()
+            
+            if debug:
+                logger.info(f"Using largest connected component with {len(G_connected.nodes())} nodes")
+        else:
+            G_connected = G
+            if debug:
+                logger.info("Graph is connected")
         
         # Compute MST
-        mst = nx.minimum_spanning_tree(G, weight='weight')
+        if debug:
+            logger.info("Computing minimum spanning tree...")
+        
+        mst = nx.minimum_spanning_tree(G_connected, weight='weight')
+        
+        if debug:
+            logger.info(f"MST has {len(mst.nodes())} nodes and {len(mst.edges())} edges")
+            
+            # Find the root node
+            root_candidates = [(1, 0)]  # Typical root node
+            root_node = None
+            for node in root_candidates:
+                if node in mst:
+                    root_node = node
+                    break
+            
+            if not root_node and mst.nodes():
+                # If typical root not found, use the node with the lowest level
+                root_node = min(mst.nodes(), key=lambda x: x[0])
+            
+            if root_node:
+                logger.info(f"Root node identified as {root_node}")
+                
+                # Analyze tree structure
+                leaf_nodes = [node for node in mst.nodes() if mst.degree(node) == 1 and node != root_node]
+                branch_nodes = [node for node in mst.nodes() if mst.degree(node) > 2]
+                
+                logger.info(f"Tree structure: {len(leaf_nodes)} leaf nodes, {len(branch_nodes)} branch nodes")
+                logger.info(f"Tree depth: {nx.eccentricity(mst, v=root_node)}")
+                
+                # Identify spirallable regions
+                spirallable_regions = identify_spirallable_regions(mst)
+                logger.info(f"Identified {len(spirallable_regions)} spirallable regions")
+                
+                # Log some details about the largest spirallable regions
+                if spirallable_regions:
+                    sorted_regions = sorted(spirallable_regions, key=len, reverse=True)
+                    for i, region in enumerate(sorted_regions[:3]):  # Show top 3
+                        logger.info(f"  Spirallable region {i+1}: {len(region)} nodes")
+                    if len(sorted_regions) > 3:
+                        logger.info(f"  ... and {len(sorted_regions) - 3} more regions")
+        
         return G, mst
     except Exception as e:
         logger.error(f"Error building MST: {e}")
@@ -563,7 +678,7 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
     # Process nodes bottom-up (leaves to root)
     def _process_node(node_id, parent_id, depth=0):
         # Prevent excessive recursion
-        if depth > 100:  # Set a reasonable limit
+        if depth > 250:  # Set a reasonable limit
             print(f"Warning: Maximum recursion depth reached ({depth}). Terminating branch.")
             return None
             
@@ -573,23 +688,71 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
         # Get children of this node
         children = [node_to_id[child] for child in directed_mst.successors(node)]
         
-        # If leaf node, create a simple path along its contour
+        # If leaf node, create a more comprehensive path for the innermost contour
         if not children:
-            # For leaf nodes, we'll create a simple path along part of the contour
+            # For leaf nodes, we'll create a spiral-like path that fills the contour
             contour = polygons[level][idx]
             exterior = exteriors[level][idx]
             
-            # Choose arbitrary start/end points for the leaf
-            t1, t2 = 0.0, 0.5  # Arbitrary parameters
-            start_point = exterior.interpolate(t1, normalized=True)
-            end_point = exterior.interpolate(t2, normalized=True)
+            # Get the centroid as a reference point
+            centroid = contour.centroid
             
-            # Generate a simple path along the contour
-            coords = get_line_segment_coords(contour, start_point, end_point)
-            if not coords or len(coords) < 2:
-                return None
+            # Create a denser sampling of points along the contour
+            num_samples = max(150, int(exterior.length / toolpath_width))
+            points = []
             
-            path = LineString(coords)
+            # Generate points along the entire contour
+            for i in range(num_samples):
+                t = i / num_samples
+                point = exterior.interpolate(t, normalized=True)
+                points.append((point.x, point.y))
+            
+            # Add the first point again to close the loop
+            points.append(points[0])
+            
+            # Create a zigzag pattern from the boundary toward the center
+            zigzag_points = []
+            num_inward_steps = 15  # Number of steps toward the center
+            
+            for i in range(0, len(points) - 1, 2):  # Skip every other point for efficiency
+                # Add the boundary point
+                zigzag_points.append(points[i])
+                
+                # Add points moving toward the center
+                for step in range(1, num_inward_steps + 1):
+                    # Interpolate between boundary point and centroid
+                    t = step / (num_inward_steps + 1)
+                    x = points[i][0] * (1 - t) + centroid.x * t
+                    y = points[i][1] * (1 - t) + centroid.y * t
+                    
+                    # Only add the point if it's inside the contour
+                    if contour.contains(Point(x, y)):
+                        zigzag_points.append((x, y))
+                    else:
+                        break
+                
+                # If we have a next point, add it and move back to the boundary
+                if i + 1 < len(points):
+                    # Add points moving from center to the next boundary point
+                    for step in range(num_inward_steps, 0, -1):
+                        t = step / (num_inward_steps + 1)
+                        x = points[i+1][0] * (1 - t) + centroid.x * t
+                        y = points[i+1][1] * (1 - t) + centroid.y * t
+                        
+                        # Only add the point if it's inside the contour
+                        if contour.contains(Point(x, y)):
+                            zigzag_points.append((x, y))
+                        
+                    # Add the next boundary point
+                    zigzag_points.append(points[i+1])
+            
+            # Create the path from the zigzag points
+            if len(zigzag_points) < 2:
+                # Fallback to simple contour if zigzag fails
+                path = LineString(points)
+            else:
+                path = LineString(zigzag_points)
+            
             processed_paths[node_id] = path
             return path
         
@@ -600,7 +763,7 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
             if child_path:
                 child_paths.append((child_id, child_path))
         
-        # If this is a spirallable region (node with 1 child), generate a Fermat spiral
+        # If this is a spirallable region (node with 1 child), generate a denser Fermat spiral
         if len(children) == 1:
             child_id, child_path = child_paths[0]
             child_node = id_to_node[child_id]
@@ -617,17 +780,50 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
             # Calculate center point of innermost contour
             center_point = Point(innermost_contour.centroid)
             
-            # Choose entry/exit points on the outermost contour
-            # For simplicity, we'll use arbitrary points
-            t1, t2 = 0.0, 0.1  # Close to each other for better connectivity
-            pin = outermost_contour.exterior.interpolate(t1, normalized=True)
-            pout = outermost_contour.exterior.interpolate(t2, normalized=True)
+            # Choose multiple entry/exit points on the outermost contour for better coverage
+            num_spiral_segments = max(4, int(outermost_contour.exterior.length / (toolpath_width * 10)))
             
-            # Generate the Fermat spiral
-            spiral_path = generate_fermat_spiral_segment(
-                polygons, exteriors, innermost_contour_idx, outermost_contour_idx,
-                pin, pout, center_point, toolpath_width
-            )
+            # Create multiple spiral segments and combine them
+            all_spiral_coords = []
+            
+            for i in range(num_spiral_segments):
+                t1 = i / num_spiral_segments
+                t2 = (i + 0.1) / num_spiral_segments  # Close to t1 for better connectivity
+                
+                pin = outermost_contour.exterior.interpolate(t1, normalized=True)
+                pout = outermost_contour.exterior.interpolate(t2, normalized=True)
+                
+                # Generate the Fermat spiral segment
+                spiral_segment = generate_fermat_spiral_segment(
+                    polygons, exteriors, innermost_contour_idx, outermost_contour_idx,
+                    pin, pout, center_point, toolpath_width
+                )
+                
+                if spiral_segment:
+                    # Add the coordinates to our collection
+                    segment_coords = list(spiral_segment.coords)
+                    
+                    # Connect to previous segment if needed
+                    if all_spiral_coords and segment_coords:
+                        # Add a connecting line if the segments aren't already connected
+                        if not np.allclose(all_spiral_coords[-1], segment_coords[0]):
+                            # Create a direct line between the segments
+                            all_spiral_coords.append(all_spiral_coords[-1])
+                            all_spiral_coords.append(segment_coords[0])
+                    
+                    all_spiral_coords.extend(segment_coords)
+            
+            # Create the final spiral path
+            if len(all_spiral_coords) < 2:
+                # Fallback to original method if the multi-segment approach fails
+                spiral_path = generate_fermat_spiral_segment(
+                    polygons, exteriors, innermost_contour_idx, outermost_contour_idx,
+                    outermost_contour.exterior.interpolate(0.0, normalized=True),
+                    outermost_contour.exterior.interpolate(0.1, normalized=True),
+                    center_point, toolpath_width
+                )
+            else:
+                spiral_path = LineString(all_spiral_coords)
             
             if not spiral_path:
                 return None
@@ -635,13 +831,31 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
             processed_paths[node_id] = spiral_path
             return spiral_path
         
-        # For branch nodes (nodes with multiple children), connect the child paths
-        # This is a simplified approach - in a full implementation, you would need
-        # more sophisticated logic to connect the paths optimally
-        
+        # For branch nodes (nodes with multiple children), create a more comprehensive fill
         # Get the contour for this node
         contour = polygons[level][idx]
         exterior = exteriors[level][idx]
+        centroid = contour.centroid
+        
+        # Create a grid of points inside the contour for better filling
+        minx, miny, maxx, maxy = contour.bounds
+        grid_spacing = toolpath_width * 0.6  # Slightly denser than toolpath width
+        
+        # Calculate number of points in each dimension
+        nx = max(5, int((maxx - minx) / grid_spacing))
+        ny = max(5, int((maxy - miny) / grid_spacing))
+        
+        # Create the grid points
+        grid_points = []
+        for i in range(nx):
+            for j in range(ny):
+                x = minx + i * (maxx - minx) / (nx - 1)
+                y = miny + j * (maxy - miny) / (ny - 1)
+                point = Point(x, y)
+                
+                # Only include points inside the contour
+                if contour.contains(point):
+                    grid_points.append(point)
         
         # Create connection points on the contour for each child
         connection_points = []
@@ -650,9 +864,32 @@ def perform_recursive_rerouting(contours, mst, toolpath_width):
             point = exterior.interpolate(t, normalized=True)
             connection_points.append(point)
         
-        # Create segments connecting the children
+        # Create a path that visits all grid points in a zigzag pattern
+        # and connects to all children
+        zigzag_coords = []
+        
+        # Start with the first connection point
+        if connection_points:
+            zigzag_coords.append((connection_points[0].x, connection_points[0].y))
+        
+        # Sort grid points by distance from centroid for a spiral-like effect
+        grid_points.sort(key=lambda p: p.distance(centroid))
+        
+        # Add grid points in sorted order
+        for point in grid_points:
+            zigzag_coords.append((point.x, point.y))
+        
+        # Add remaining connection points
+        for i in range(1, len(connection_points)):
+            zigzag_coords.append((connection_points[i].x, connection_points[i].y))
+        
+        # Create segments connecting the children with the zigzag path
         segments = []
-        for i in range(len(child_paths)):
+        if len(zigzag_coords) >= 2:
+            segments.append(LineString(zigzag_coords))
+        
+        # Also add segments along the contour between connection points
+        for i in range(len(connection_points)):
             start_point = connection_points[i]
             end_point = connection_points[(i+1) % len(connection_points)]
             
@@ -739,7 +976,7 @@ def visualize_iso_contours(region, contours, title="Iso-Contours (Step 5)"):
     plt.tight_layout()
     plt.show()
 
-def visualize_spiral_contour_tree(region, contours, graph, mst, title="Spiral Contour Tree (Step 6)"):
+def visualize_spiral_contour_tree(region, contours, graph, mst, title="Spiral Contour Tree (Step 6)", save_path=None):
     """
     Visualize the spiral contour tree (Step 6 of the algorithm).
     
@@ -749,63 +986,177 @@ def visualize_spiral_contour_tree(region, contours, graph, mst, title="Spiral Co
         graph (nx.Graph): The connectivity graph
         mst (nx.Graph): The minimum spanning tree
         title (str): Title for the plot
+        save_path (str, optional): Path to save the visualization
     """
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig, ax = plt.subplots(figsize=(14, 12))
     
     # Plot the original region
     x, y = region.exterior.xy
-    ax.plot(x, y, 'k-', linewidth=1, alpha=0.3)
+    ax.plot(x, y, 'k-', linewidth=1.5, alpha=0.5, label='Region Boundary')
     
-    # Plot contours
-    for level in contours:
+    # Plot holes if any
+    for interior in region.interiors:
+        x, y = interior.xy
+        ax.plot(x, y, 'k-', linewidth=1.5, alpha=0.5)
+    
+    # Plot contours with different colors for each level
+    colors = plt.cm.viridis(np.linspace(0, 1, len(contours) + 1))
+    for i, level in enumerate(sorted(contours.keys())):
         for j, contour in enumerate(contours[level]):
             x, y = contour.exterior.xy
-            ax.plot(x, y, 'g-', linewidth=0.5, alpha=0.3)
-            
-            # Add node labels
-            centroid = contour.centroid
-            ax.text(centroid.x, centroid.y, f"({level},{j})", 
-                   ha='center', va='center', fontsize=8)
+            ax.plot(x, y, '-', color=colors[i], linewidth=1.0, alpha=0.4,
+                   label=f'Level {level}' if j == 0 else "")
     
     # Create a position dictionary for the graph nodes
     pos = {}
+    node_sizes = {}
     for node in graph.nodes():
         level, idx = node
         if level in contours and idx < len(contours[level]):
             contour = contours[level][idx]
             pos[node] = (contour.centroid.x, contour.centroid.y)
+            # Size nodes based on contour area
+            node_sizes[node] = max(50, min(500, contour.area * 0.1))
     
-    # Plot all edges in the graph as light gray
-    for u, v in graph.edges():
+    # Plot all edges in the graph as light gray with weights
+    for u, v, data in graph.edges(data=True):
         if u in pos and v in pos:
             ax.plot([pos[u][0], pos[v][0]], [pos[u][1], pos[v][1]], 
                    'gray', linestyle=':', linewidth=0.5, alpha=0.5)
+            
+            # Add weight label to graph edges
+            if 'weight' in data:
+                # Position the label at the middle of the edge
+                mid_x = (pos[u][0] + pos[v][0]) / 2
+                mid_y = (pos[u][1] + pos[v][1]) / 2
+                ax.text(mid_x, mid_y, f"{data['weight']:.1f}", 
+                       color='gray', fontsize=7, ha='center', va='center',
+                       bbox=dict(facecolor='white', alpha=0.7, pad=1))
     
-    # Plot MST edges as bold blue
-    for u, v in mst.edges():
+    # Plot MST edges as bold blue with weights and directions
+    for u, v, data in mst.edges(data=True):
         if u in pos and v in pos:
+            # Draw the edge
             ax.plot([pos[u][0], pos[v][0]], [pos[u][1], pos[v][1]], 
                    'blue', linestyle='-', linewidth=2)
+            
+            # Add an arrow to show parent-child relationship
+            mid_x = (pos[u][0] + pos[v][0]) / 2
+            mid_y = (pos[u][1] + pos[v][1]) / 2
+            dx = (pos[v][0] - pos[u][0]) * 0.4
+            dy = (pos[v][1] - pos[u][1]) * 0.4
+            ax.arrow(mid_x - dx/2, mid_y - dy/2, dx, dy, 
+                    head_width=0.3, head_length=0.5, fc='blue', ec='blue', 
+                    length_includes_head=True)
+            
+            # Add weight label to MST edges
+            if 'weight' in data:
+                ax.text(mid_x, mid_y + 0.5, f"{data['weight']:.1f}", 
+                       color='blue', fontsize=9, ha='center', va='center',
+                       bbox=dict(facecolor='white', alpha=0.8, pad=2))
     
-    # Plot nodes
+    # Plot nodes with different sizes and colors
+    mst_nodes = list(mst.nodes())
+    
+    # Find the root node (typically the one with the lowest level)
+    root_node = None
+    for node in mst_nodes:
+        if node[0] == 1 and node[1] == 0:  # Level 1, index 0 is typically the root
+            root_node = node
+            break
+    if not root_node and mst_nodes:
+        root_node = min(mst_nodes, key=lambda x: x[0])
+    
+    # Plot non-MST nodes
+    for node in graph.nodes():
+        if node in pos and node not in mst:
+            ax.plot(pos[node][0], pos[node][1], 'go', 
+                   markersize=np.sqrt(node_sizes.get(node, 100)/np.pi))
+    
+    # Plot MST nodes
+    for node in mst_nodes:
+        if node in pos:
+            if node == root_node:
+                # Root node in purple
+                ax.plot(pos[node][0], pos[node][1], 'mo', 
+                       markersize=np.sqrt(node_sizes.get(node, 150)/np.pi))
+            else:
+                # Other MST nodes in red
+                ax.plot(pos[node][0], pos[node][1], 'ro', 
+                       markersize=np.sqrt(node_sizes.get(node, 100)/np.pi))
+    
+    # Add node labels with more information
     for node in graph.nodes():
         if node in pos:
+            level, idx = node
+            # Get node degree
+            degree = graph.degree(node)
+            mst_degree = mst.degree(node) if node in mst else 0
+            
+            # Create label with node ID and degree info
+            label = f"({level},{idx})"
             if node in mst:
-                ax.plot(pos[node][0], pos[node][1], 'ro', markersize=8)  # MST nodes in red
-            else:
-                ax.plot(pos[node][0], pos[node][1], 'go', markersize=6)  # Other nodes in green
+                label += f"\nD:{mst_degree}"
+                
+                # Add special marker for leaf nodes (degree 1 in MST)
+                if mst_degree == 1 and node != root_node:
+                    ax.text(pos[node][0], pos[node][1] - 0.8, "LEAF", 
+                           color='red', fontsize=8, ha='center', va='center',
+                           bbox=dict(facecolor='yellow', alpha=0.7, pad=1))
+                
+                # Add special marker for branch nodes (degree > 2 in MST)
+                if mst_degree > 2:
+                    ax.text(pos[node][0], pos[node][1] - 0.8, "BRANCH", 
+                           color='blue', fontsize=8, ha='center', va='center',
+                           bbox=dict(facecolor='cyan', alpha=0.7, pad=1))
+            
+            ax.text(pos[node][0], pos[node][1], label, 
+                   ha='center', va='center', fontsize=9,
+                   bbox=dict(facecolor='white', alpha=0.7, pad=1))
+    
+    # Mark the root node
+    if root_node and root_node in pos:
+        ax.text(pos[root_node][0], pos[root_node][1] - 0.8, "ROOT", 
+               color='purple', fontsize=10, ha='center', va='center',
+               bbox=dict(facecolor='white', alpha=0.9, pad=2))
     
     ax.set_aspect('equal')
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14)
     
-    # Add legend
-    ax.plot([], [], 'ro', markersize=8, label='MST Nodes')
-    ax.plot([], [], 'go', markersize=6, label='Other Nodes')
-    ax.plot([], [], 'blue', linestyle='-', linewidth=2, label='MST Edges')
-    ax.plot([], [], 'gray', linestyle=':', linewidth=0.5, label='Graph Edges')
-    ax.legend(loc='best')
+    # Add detailed legend
+    legend_elements = [
+        plt.Line2D([0], [0], color='k', lw=1.5, alpha=0.5, label='Region Boundary'),
+        plt.Line2D([0], [0], color=colors[0], lw=1, alpha=0.4, label='Contour Level 1'),
+        plt.Line2D([0], [0], color=colors[-1], lw=1, alpha=0.4, label=f'Contour Level {len(contours)}'),
+        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='m', markersize=10, label='Root Node'),
+        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='r', markersize=10, label='MST Nodes'),
+        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='g', markersize=8, label='Other Nodes'),
+        plt.Line2D([0], [0], color='blue', lw=2, label='MST Edges'),
+        plt.Line2D([0], [0], color='gray', lw=0.5, linestyle=':', label='Graph Edges')
+    ]
+    ax.legend(handles=legend_elements, loc='best', fontsize=10)
+    
+    # Add statistics text box
+    stats_text = (
+        f"Region Area: {region.area:.1f}\n"
+        f"Contour Levels: {len(contours)}\n"
+        f"Total Contours: {sum(len(contours[level]) for level in contours)}\n"
+        f"Graph Nodes: {len(graph.nodes())}\n"
+        f"Graph Edges: {len(graph.edges())}\n"
+        f"MST Nodes: {len(mst.nodes())}\n"
+        f"MST Edges: {len(mst.edges())}"
+    )
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
+           verticalalignment='top', bbox=props)
     
     plt.tight_layout()
+    
+    # Save the figure if a path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Visualization saved to {save_path}")
+    
     plt.show()
 
 def visualize_recursive_rerouting(region, contours, mst, final_path, title="Recursive Rerouting (Step 7)"):
@@ -877,17 +1228,19 @@ def visualize_recursive_rerouting(region, contours, mst, final_path, title="Recu
     plt.tight_layout()
     plt.show()
 
-def visualize_cfs_fill(region, toolpath, toolpath_width=None, contours=None):
+def visualize_cfs_fill(region, toolpath=None, toolpath_width=None, contours=None, mst=None, save_path=None):
     """
     Visualize the CFS fill path.
     
     Args:
         region (Polygon): The original region
-        toolpath (LineString): The generated toolpath
+        toolpath (LineString, optional): The generated toolpath
         toolpath_width (float, optional): The toolpath width for generating contours
         contours (dict, optional): Pre-computed contours to visualize
+        mst (nx.Graph, optional): The minimum spanning tree to visualize
+        save_path (str, optional): Path to save the visualization
     """
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(12, 12))
     
     # Plot the original region
     x, y = region.exterior.xy
@@ -900,23 +1253,172 @@ def visualize_cfs_fill(region, toolpath, toolpath_width=None, contours=None):
     
     # Plot contours if provided
     if contours:
-        for level in contours:
+        colors = plt.cm.viridis(np.linspace(0, 1, len(contours) + 1))
+        for i, level in enumerate(sorted(contours.keys())):
             for contour in contours[level]:
                 x, y = contour.exterior.xy
-                ax.plot(x, y, 'g--', linewidth=0.5, alpha=0.5)
+                ax.plot(x, y, '-', color=colors[i], linewidth=0.8, alpha=0.5,
+                       label=f'Level {level}' if i == 0 else "")
+                
+                # Add level labels to some contours
+                if i % 2 == 0:  # Only label every other level to avoid clutter
+                    centroid = contour.centroid
+                    ax.text(centroid.x, centroid.y, f"{level}", 
+                           ha='center', va='center', fontsize=8, alpha=0.7)
+    
+    # Plot MST if provided
+    if mst and contours:
+        # Create a position dictionary for the graph nodes
+        pos = {}
+        for node in mst.nodes():
+            level, idx = node
+            if level in contours and idx < len(contours[level]):
+                contour = contours[level][idx]
+                pos[node] = (contour.centroid.x, contour.centroid.y)
+        
+        # Plot MST edges
+        for u, v in mst.edges():
+            if u in pos and v in pos:
+                ax.plot([pos[u][0], pos[v][0]], [pos[u][1], pos[v][1]], 
+                       'blue', linestyle='-', linewidth=1, alpha=0.7)
+        
+        # Plot MST nodes
+        for node in mst.nodes():
+            if node in pos:
+                ax.plot(pos[node][0], pos[node][1], 'ro', markersize=4, alpha=0.7)
     
     # Plot the toolpath
     if toolpath:
         x, y = toolpath.xy
-        ax.plot(x, y, 'r-', linewidth=1, label='CFS Toolpath')
+        ax.plot(x, y, 'r-', linewidth=1.5, label='CFS Toolpath')
         
         # Mark start and end points
-        ax.plot(x[0], y[0], 'go', markersize=6, label='Start')
-        ax.plot(x[-1], y[-1], 'ro', markersize=6, label='End')
+        ax.plot(x[0], y[0], 'go', markersize=8, label='Start')
+        ax.plot(x[-1], y[-1], 'ro', markersize=8, label='End')
+        
+        # Add arrows to show direction
+        arrow_indices = np.linspace(0, len(x) - 2, min(20, len(x) - 1)).astype(int)
+        for i in arrow_indices:
+            dx, dy = x[i+1] - x[i], y[i+1] - y[i]
+            length = np.sqrt(dx**2 + dy**2)
+            if length > 0:
+                ax.arrow(x[i], y[i], dx * 0.8, dy * 0.8, 
+                        head_width=0.2, head_length=0.3, fc='blue', ec='blue', 
+                        length_includes_head=True, alpha=0.7)
     
     ax.set_aspect('equal')
-    ax.set_title('Continuous Fermat Spiral (CFS) Fill')
-    ax.legend()
+    ax.set_title('Continuous Fermat Spiral (CFS) Fill', fontsize=14)
+    
+    # Create a custom legend with unique entries
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='best')
+    
+    # Add statistics text box
+    stats_text = f"Region Area: {region.area:.1f}"
+    if contours:
+        stats_text += f"\nContour Levels: {len(contours)}"
+        stats_text += f"\nTotal Contours: {sum(len(contours[level]) for level in contours)}"
+    if mst:
+        stats_text += f"\nMST Nodes: {len(mst.nodes())}"
+        stats_text += f"\nMST Edges: {len(mst.edges())}"
+    if toolpath:
+        stats_text += f"\nToolpath Length: {toolpath.length:.1f}"
+        stats_text += f"\nToolpath Points: {len(toolpath.coords)}"
+    
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
+           verticalalignment='top', bbox=props)
     
     plt.tight_layout()
+    
+    # Save the figure if a path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Visualization saved to {save_path}")
+    
     plt.show()
+def analyze_spiral_contour_tree(contours, mst):
+    """
+    Analyze the spiral contour tree and print detailed information.
+    
+    Args:
+        contours (dict): Dictionary of contours
+        mst (nx.Graph): The minimum spanning tree
+    """
+    if not mst:
+        logger.error("No MST provided for analysis")
+        return
+    
+    logger.info("\n=== Spiral Contour Tree Analysis ===")
+    
+    # Basic statistics
+    logger.info(f"MST has {len(mst.nodes())} nodes and {len(mst.edges())} edges")
+    
+    # Find the root node (typically the one with the lowest level)
+    root_node = None
+    for node in mst.nodes():
+        if node[0] == 1 and node[1] == 0:  # Level 1, index 0 is typically the root
+            root_node = node
+            break
+    if not root_node and mst.nodes():
+        root_node = min(mst.nodes(), key=lambda x: x[0])
+    
+    if root_node:
+        logger.info(f"Root node: {root_node}")
+        
+        # Calculate tree depth
+        try:
+            tree_depth = nx.eccentricity(mst, v=root_node)
+            logger.info(f"Tree depth from root: {tree_depth}")
+        except:
+            logger.warning("Could not calculate tree depth")
+        
+        # Identify node types
+        leaf_nodes = [node for node in mst.nodes() if mst.degree(node) == 1 and node != root_node]
+        branch_nodes = [node for node in mst.nodes() if mst.degree(node) > 2]
+        chain_nodes = [node for node in mst.nodes() if mst.degree(node) == 2 or (node == root_node and mst.degree(node) == 1)]
+        
+        logger.info(f"Node types:")
+        logger.info(f"  Root node: {root_node} (degree: {mst.degree(root_node)})")
+        logger.info(f"  Leaf nodes: {len(leaf_nodes)} ({', '.join(str(node) for node in leaf_nodes[:5])}{'...' if len(leaf_nodes) > 5 else ''})")
+        logger.info(f"  Branch nodes: {len(branch_nodes)} ({', '.join(str(node) for node in branch_nodes[:5])}{'...' if len(branch_nodes) > 5 else ''})")
+        logger.info(f"  Chain nodes: {len(chain_nodes)}")
+        
+        # Analyze levels
+        levels = {}
+        for node in mst.nodes():
+            level = node[0]
+            if level not in levels:
+                levels[level] = []
+            levels[level].append(node)
+        
+        logger.info(f"Level distribution:")
+        for level in sorted(levels.keys()):
+            logger.info(f"  Level {level}: {len(levels[level])} nodes")
+        
+        # Identify spirallable regions
+        spirallable_regions = identify_spirallable_regions(mst)
+        logger.info(f"Spirallable regions: {len(spirallable_regions)}")
+        
+        # Analyze spirallable regions
+        if spirallable_regions:
+            sorted_regions = sorted(spirallable_regions, key=len, reverse=True)
+            for i, region in enumerate(sorted_regions[:5]):  # Show top 5
+                min_level = min(node[0] for node in region)
+                max_level = max(node[0] for node in region)
+                logger.info(f"  Region {i+1}: {len(region)} nodes, levels {min_level}-{max_level}")
+                
+                # Check if this is a simple chain
+                is_chain = all(sum(1 for n in mst.neighbors(node) if n in region) <= 2 for node in region)
+                logger.info(f"    Is chain: {is_chain}")
+                
+                # List some nodes in this region
+                logger.info(f"    Sample nodes: {', '.join(str(node) for node in region[:5])}{'...' if len(region) > 5 else ''}")
+            
+            if len(sorted_regions) > 5:
+                logger.info(f"  ... and {len(sorted_regions) - 5} more regions")
+    else:
+        logger.warning("Could not identify root node in MST")
+    
+    logger.info("=== End of Analysis ===\n")

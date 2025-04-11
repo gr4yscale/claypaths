@@ -2,7 +2,7 @@ import os
 import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
-from src.cfs_filler import generate_cfs_fill, visualize_cfs_fill
+from src.cfs_filler import generate_cfs_fill, visualize_cfs_fill, analyze_spiral_contour_tree
 
 def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
@@ -81,16 +81,24 @@ def main():
                 contour_poly = sample_layer[0]
                 
                 print(f"\nGenerating CFS fill for layer {sample_layer_idx+1}, polygon 1")
-                cfs_result = generate_cfs_fill(contour_poly, toolpath_width, True)
+                final_path, contours, mst = generate_cfs_fill(contour_poly, toolpath_width, True, debug=True)
                 
-                if cfs_result:
-                    print(f"Successfully generated CFS fill with {len(cfs_result.coords)} points")
+                # Analyze the spiral contour tree
+                if contours and mst:
+                    print("\nAnalyzing spiral contour tree...")
+                    analyze_spiral_contour_tree(contours, mst)
                     
-                    # Visualize the CFS fill
+                    # Visualize the CFS fill with contours and MST
                     print("\nVisualizing CFS fill...")
-                    visualize_cfs_fill(contour_poly, cfs_result, toolpath_width)
+                    visualize_cfs_fill(contour_poly, final_path, toolpath_width, contours, mst)
+                    
+                    if final_path:
+                        print(f"Successfully generated CFS fill with {len(final_path.coords)} points")
+                        print(f"Total path length: {final_path.length:.2f} units")
+                    else:
+                        print("Failed to generate the final continuous path")
                 else:
-                    print("Failed to generate CFS fill for the layer")
+                    print("Failed to generate complete CFS fill for the layer")
             else:
                 print(f"No valid polygons in layer {sample_layer_idx+1}")
 
