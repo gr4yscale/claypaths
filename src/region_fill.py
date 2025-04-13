@@ -4,13 +4,15 @@ from shapely.geometry import Polygon, LineString, Point, LinearRing
 from shapely.ops import unary_union
 from shapely.affinity import scale, translate
 
-def generate_continuous_fill(polygon, toolpath_width=1.0):
+def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     """
     Generate a continuous fill pattern for a polygon using smooth contour-based paths.
+    Optimizes the start point based on the previous layer's end point if provided.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
         toolpath_width (float): Width of the toolpath
+        prev_end_point (tuple): The end point of the previous layer's path (x, y)
         
     Returns:
         list: List of points representing the continuous toolpath
@@ -19,18 +21,20 @@ def generate_continuous_fill(polygon, toolpath_width=1.0):
         print("Invalid polygon for region fill")
         return []
     
-    # Generate contour-based fill
-    contour_path = generate_contour_fill(polygon, toolpath_width)
+    # Generate contour-based fill with optimization for previous end point
+    contour_path = generate_contour_fill(polygon, toolpath_width, prev_end_point)
     
     return contour_path
 
-def generate_contour_fill(polygon, toolpath_width):
+def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     """
     Generate a continuous fill pattern using inward contours.
+    Optimizes the start point based on the previous layer's end point if provided.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
         toolpath_width (float): Width of the toolpath
+        prev_end_point (tuple): The end point of the previous layer's path (x, y)
         
     Returns:
         list: List of points representing the continuous toolpath
@@ -59,18 +63,20 @@ def generate_contour_fill(polygon, toolpath_width):
             
         current_polygon = next_polygon
     
-    # Connect the contours to form a continuous spiral path
-    path = connect_contours(contours, toolpath_width)
+    # Connect the contours to form a continuous spiral path, optimizing for previous end point
+    path = connect_contours(contours, toolpath_width, prev_end_point)
     
     return path
 
-def connect_contours(contours, toolpath_width):
+def connect_contours(contours, toolpath_width, prev_end_point=None):
     """
     Connect contours to form a continuous spiral path.
+    Optimizes the start point based on the previous layer's end point if provided.
     
     Args:
         contours (list): List of LinearRings representing contours
         toolpath_width (float): Width of the toolpath
+        prev_end_point (tuple): The end point of the previous layer's path (x, y)
         
     Returns:
         list: List of points representing the continuous path
@@ -81,7 +87,37 @@ def connect_contours(contours, toolpath_width):
     path = []
     
     # Start with the outermost contour
-    for x, y in contours[0].coords[:-1]:  # Exclude the last point as it's the same as the first
+    outer_contour_coords = list(contours[0].coords)[:-1]  # Exclude the last point as it's the same as the first
+    
+    # If we have a previous end point, find the closest point on the outer contour to start from
+    if prev_end_point:
+        prev_point = Point(prev_end_point)
+        
+        # Find the closest point on the outer contour
+        min_dist = float('inf')
+        start_idx = 0
+        
+        for i, point in enumerate(outer_contour_coords):
+            dist = prev_point.distance(Point(point))
+            if dist < min_dist:
+                min_dist = dist
+                start_idx = i
+        
+        # Reorder the outer contour to start from the closest point
+        outer_contour_coords = outer_contour_coords[start_idx:] + outer_contour_coords[:start_idx]
+        
+        # Add a smooth connection from the previous end point to the start point if needed
+        if min_dist > toolpath_width * 0.1:
+            connection_points = create_smooth_connection(
+                prev_end_point,
+                outer_contour_coords[0],
+                toolpath_width
+            )
+            for point in connection_points:
+                path.append(point)
+    
+    # Add the outer contour points to the path
+    for x, y in outer_contour_coords:
         path.append((x, y))
     
     # Connect to inner contours

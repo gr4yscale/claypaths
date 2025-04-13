@@ -1,8 +1,47 @@
 import os
+import numpy as np
 import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.region_fill import generate_continuous_fill, visualize_fill_path
+
+def calculate_travel_distance(prev_layer, current_layer, current_path):
+    """
+    Calculate the travel distance between the end of the previous layer's path
+    and the start of the current layer's path.
+    
+    Args:
+        prev_layer: List of polygons in the previous layer
+        current_layer: List of polygons in the current layer
+        current_path: The current layer's path
+        
+    Returns:
+        float: The travel distance in mm
+    """
+    if not prev_layer or not current_layer or not current_path:
+        return 0.0
+    
+    # Get the end point of the previous layer's path
+    # This is a simplification - in a real implementation, you'd store the actual path
+    prev_end_point = getattr(calculate_travel_distance, 'prev_end_point', None)
+    
+    if prev_end_point and current_path:
+        # Calculate Euclidean distance between the previous end point and current start point
+        start_point = current_path[0]
+        dx = prev_end_point[0] - start_point[0]
+        dy = prev_end_point[1] - start_point[1]
+        distance = np.sqrt(dx*dx + dy*dy)
+        
+        # Store the current end point for the next calculation
+        calculate_travel_distance.prev_end_point = current_path[-1]
+        
+        return distance
+    
+    # Store the current end point for the next calculation
+    if current_path:
+        calculate_travel_distance.prev_end_point = current_path[-1]
+    
+    return 0.0
 
 def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
@@ -19,7 +58,6 @@ def main():
     #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
     #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
     #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
-
 
     # complex shapes, problematic
     # holes are detected as solid rather than the cuboid
@@ -68,32 +106,48 @@ def main():
         #visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
         
         # Step 3: Generate region fill for each layer
-        print("\nStep 3: Generating region fill for sample layers")
-        toolpath_width = 1.0  # Default toolpath width in mm
+        print("\nStep 3: Generating region fill for layers")
+        toolpath_width = 0.4  # Default toolpath width in mm
         
-        # Process a sample layer
+        # Process multiple layers
         if layers and len(layers) > 0:
-            sample_layer_idx = 2
-            sample_layer = layers[sample_layer_idx]
+            # Initialize previous end point to None (for the first layer)
+            prev_end_point = None
             
-            if sample_layer and len(sample_layer) > 0:
-                # Take the first polygon in the layer
-                contour_poly = sample_layer[0]
+            # Process a few sample layers
+            num_layers_to_process = min(5, len(layers))
+            for layer_idx in range(num_layers_to_process):
+                layer = layers[layer_idx]
                 
-                print(f"\nGenerating region fill for layer {sample_layer_idx+1}, polygon 1")
-                
-                # Generate continuous fill path for the polygon
-                fill_path = generate_continuous_fill(contour_poly, toolpath_width)
-                
-                if fill_path:
-                    print(f"Generated continuous fill path with {len(fill_path)} points")
-                    # Visualize the fill path
-                    visualize_fill_path(contour_poly, fill_path, 
-                                       f"Layer {sample_layer_idx+1} Continuous Fill Path")
+                if layer and len(layer) > 0:
+                    # Take the first polygon in the layer
+                    contour_poly = layer[0]
+                    
+                    print(f"\nGenerating region fill for layer {layer_idx+1}, polygon 1")
+                    
+                    # Generate continuous fill path for the polygon, optimizing for previous layer's end point
+                    fill_path = generate_continuous_fill(contour_poly, toolpath_width, prev_end_point)
+                    
+                    if fill_path:
+                        print(f"Generated continuous fill path with {len(fill_path)} points")
+                        
+                        # Update the previous end point for the next layer
+                        prev_end_point = fill_path[-1] if fill_path else None
+                        
+                        # Visualize the fill path
+                        visualize_fill_path(contour_poly, fill_path, 
+                                          f"Layer {layer_idx+1} Continuous Fill Path")
+                        
+                        # If this isn't the first layer, print the travel distance
+                        if layer_idx > 0:
+                            print(f"Travel distance between layers {layer_idx} and {layer_idx+1}: "
+                                  f"{calculate_travel_distance(layers[layer_idx-1], layer, fill_path):.2f}mm")
+                    else:
+                        print("Failed to generate fill path")
+                        prev_end_point = None
                 else:
-                    print("Failed to generate fill path")
-            else:
-                print(f"No valid polygons in layer {sample_layer_idx+1}")
+                    print(f"No valid polygons in layer {layer_idx+1}")
+                    prev_end_point = None
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
