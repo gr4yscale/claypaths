@@ -272,7 +272,7 @@ class ToolpathOptimizer:
             docker_cmd = [
                 'docker', 'run', '--rm', '-t',
                 '-v', f'{tsp_dir}:/usr/local/opt/concorde/',
-                'alehkot/concorde-tsp:1.1',
+                'alehkot/concorde-tsp',
                 f'/data/{tsp_basename}'
             ]
             

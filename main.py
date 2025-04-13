@@ -4,44 +4,8 @@ import matplotlib.pyplot as plt # Ensure matplotlib is imported
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.region_fill import generate_continuous_fill, visualize_fill_path
+from src.toolpath_optimizer import ToolpathOptimizer
 
-def calculate_travel_distance(prev_layer, current_layer, current_path):
-    """
-    Calculate the travel distance between the end of the previous layer's path
-    and the start of the current layer's path.
-    
-    Args:
-        prev_layer: List of polygons in the previous layer
-        current_layer: List of polygons in the current layer
-        current_path: The current layer's path
-        
-    Returns:
-        float: The travel distance in mm
-    """
-    if not prev_layer or not current_layer or not current_path:
-        return 0.0
-    
-    # Get the end point of the previous layer's path
-    # This is a simplification - in a real implementation, you'd store the actual path
-    prev_end_point = getattr(calculate_travel_distance, 'prev_end_point', None)
-    
-    if prev_end_point and current_path:
-        # Calculate Euclidean distance between the previous end point and current start point
-        start_point = current_path[0]
-        dx = prev_end_point[0] - start_point[0]
-        dy = prev_end_point[1] - start_point[1]
-        distance = np.sqrt(dx*dx + dy*dy)
-        
-        # Store the current end point for the next calculation
-        calculate_travel_distance.prev_end_point = current_path[-1]
-        
-        return distance
-    
-    # Store the current end point for the next calculation
-    if current_path:
-        calculate_travel_distance.prev_end_point = current_path[-1]
-    
-    return 0.0
 
 def main():
     print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
@@ -105,49 +69,42 @@ def main():
         #print("\nVisualizing sample layers (original contours)...")
         #visualize_layers(layers, mesh_info['min_coords'][2], layer_height, num_to_show=min(len(layers), 3))
         
-        # Step 3: Generate region fill for each layer
-        print("\nStep 3: Generating region fill for layers")
+        # Step 3: Generate and optimize region fill for each layer
+        print("\nStep 3: Generating and optimizing region fill for layers")
         toolpath_width = 0.4  # Default toolpath width in mm
         
-        # Process multiple layers
+        # Create a toolpath optimizer
+        optimizer = ToolpathOptimizer(toolpath_width)
+        
+        # Process all layers
         if layers and len(layers) > 0:
-            # Initialize previous end point to None (for the first layer)
-            prev_end_point = None
-            
-            # Process a few sample layers
+            # Limit the number of layers to process for testing
             num_layers_to_process = min(5, len(layers))
-            for layer_idx in range(num_layers_to_process):
-                layer = layers[layer_idx]
-                
-                if layer and len(layer) > 0:
-                    # Take the first polygon in the layer
-                    contour_poly = layer[0]
+            layers_to_process = layers[:num_layers_to_process]
+            
+            print(f"Processing {num_layers_to_process} layers...")
+            
+            # Generate optimized toolpaths for all layers
+            optimized_paths = optimizer.optimize_layers(layers_to_process, generate_continuous_fill)
+            
+            # Visualize the optimized paths
+            for layer_idx, (layer, path) in enumerate(zip(layers_to_process, optimized_paths)):
+                if path:
+                    print(f"\nLayer {layer_idx+1}: Optimized path with {len(path)} points")
                     
-                    print(f"\nGenerating region fill for layer {layer_idx+1}, polygon 1")
+                    # Visualize the optimized path
+                    optimizer.visualize_optimized_path(layer, path, layer_idx)
                     
-                    # Generate continuous fill path for the polygon, optimizing for previous layer's end point
-                    fill_path = generate_continuous_fill(contour_poly, toolpath_width, prev_end_point)
-                    
-                    if fill_path:
-                        print(f"Generated continuous fill path with {len(fill_path)} points")
-                        
-                        # Update the previous end point for the next layer
-                        prev_end_point = fill_path[-1] if fill_path else None
-                        
-                        # Visualize the fill path
-                        visualize_fill_path(contour_poly, fill_path, 
-                                          f"Layer {layer_idx+1} Continuous Fill Path")
-                        
-                        # If this isn't the first layer, print the travel distance
-                        if layer_idx > 0:
-                            print(f"Travel distance between layers {layer_idx} and {layer_idx+1}: "
-                                  f"{calculate_travel_distance(layers[layer_idx-1], layer, fill_path):.2f}mm")
-                    else:
-                        print("Failed to generate fill path")
-                        prev_end_point = None
+                    # If this isn't the first layer, print the travel distance
+                    if layer_idx > 0 and optimized_paths[layer_idx-1]:
+                        prev_end = optimized_paths[layer_idx-1][-1]
+                        curr_start = path[0]
+                        travel_dist = np.sqrt((prev_end[0] - curr_start[0])**2 + 
+                                             (prev_end[1] - curr_start[1])**2)
+                        print(f"Travel distance between layers {layer_idx} and {layer_idx+1}: "
+                              f"{travel_dist:.2f}mm")
                 else:
-                    print(f"No valid polygons in layer {layer_idx+1}")
-                    prev_end_point = None
+                    print(f"\nLayer {layer_idx+1}: No valid path generated")
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
