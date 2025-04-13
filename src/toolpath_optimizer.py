@@ -255,7 +255,7 @@ class ToolpathOptimizer:
     
     def _run_concorde(self, tsp_filename):
         """
-        Run the Concorde TSP solver.
+        Run the Concorde TSP solver using Docker.
         
         Args:
             tsp_filename (str): Path to the TSP problem file
@@ -264,23 +264,27 @@ class ToolpathOptimizer:
             list: Optimal tour as a list of indices
         """
         try:
-            # Check if Concorde is available
-            result = subprocess.run(['which', 'concorde'], 
+            # Get the directory and filename
+            tsp_dir = os.path.dirname(tsp_filename)
+            tsp_basename = os.path.basename(tsp_filename)
+            
+            # Create the Docker command
+            docker_cmd = [
+                'docker', 'run', '--rm', '-t',
+                '-v', f'{tsp_dir}:/usr/local/opt/concorde/',
+                'alehkot/concorde-tsp:1.1',
+                f'/data/{tsp_basename}'
+            ]
+            
+            # Run Concorde via Docker
+            print("  Running Concorde TSP solver via Docker...")
+            result = subprocess.run(docker_cmd, 
                                    stdout=subprocess.PIPE, 
                                    stderr=subprocess.PIPE)
             
             if result.returncode != 0:
-                print("  Concorde TSP solver not found, using greedy approach")
-                return None
-            
-            # Run Concorde
-            print("  Running Concorde TSP solver...")
-            result = subprocess.run(['concorde', tsp_filename], 
-                                   stdout=subprocess.PIPE, 
-                                   stderr=subprocess.PIPE)
-            
-            if result.returncode != 0:
-                print("  Error running Concorde, using greedy approach")
+                print(f"  Error running Concorde via Docker: {result.stderr.decode('utf-8')}")
+                print("  Falling back to greedy approach")
                 return None
             
             # Parse the output to get the tour
@@ -361,6 +365,7 @@ class ToolpathOptimizer:
             unvisited.remove(next_node)
         
         return tour
+    
     
     def _euclidean_distance(self, p1, p2):
         """
