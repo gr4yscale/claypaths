@@ -272,9 +272,19 @@ class ToolpathOptimizer:
                         # Use the minimum distance
                         distance_matrix[i, j] = min(d1, d2, d3, d4)
             
+            # Scale the distance matrix to avoid "edge too long" errors
+            # Concorde has limits on edge lengths, so we'll scale to a reasonable range
+            if np.max(distance_matrix) > 0:
+                # Scale to a range that Concorde can handle (typically max of 32767)
+                scale_factor = min(100, 30000 / max(1, np.max(distance_matrix)))
+            else:
+                scale_factor = 100
+                
+            print(f"  Scaling distances by factor {scale_factor:.2f}")
+            
             # Write the distance matrix to the TSP file
             for i in range(num_curves):
-                row = " ".join([str(int(distance_matrix[i, j] * 1000)) for j in range(num_curves)])
+                row = " ".join([str(int(distance_matrix[i, j] * scale_factor)) for j in range(num_curves)])
                 tsp_file.write(f"{row}\n".encode())
             
             tsp_file.write(f"EOF\n".encode())
@@ -404,6 +414,12 @@ class ToolpathOptimizer:
                 print(f"  Concorde stdout: {stdout_output}")
             if stderr_output:
                 print(f"  Concorde stderr: {stderr_output}")
+            
+            # Check for specific error patterns in the output
+            if "edge too long" in stdout_output or "edge too long" in stderr_output:
+                print("  Concorde error: Edge too long. Try reducing the scale factor.")
+                print("  Falling back to greedy approach")
+                return None
             
             if result.returncode != 0:
                 print(f"  Error running Concorde via Docker (return code: {result.returncode})")
