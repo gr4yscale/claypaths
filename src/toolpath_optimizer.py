@@ -388,6 +388,18 @@ class ToolpathOptimizer:
             list: Optimal tour as a list of indices
         """
         try:
+            # Read the TSP file to determine the problem size
+            with open(tsp_filename, 'r') as f:
+                for line in f:
+                    if line.startswith("DIMENSION"):
+                        dimension = int(line.split(":")[1].strip())
+                        break
+            
+            # For very small problems (<=4 nodes), just use the greedy approach
+            # Concorde sometimes has issues with very small problems
+            if dimension <= 4:
+                print(f"  Small problem (dimension={dimension}), using greedy approach")
+                return None
             # Get the directory and filename
             tsp_dir = os.path.abspath(os.path.dirname(tsp_filename))
             tsp_basename = os.path.basename(tsp_filename)
