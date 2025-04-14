@@ -379,13 +379,13 @@ class ToolpathOptimizer:
         """
         try:
             # Get the directory and filename
-            tsp_dir = os.path.dirname(tsp_filename)
+            tsp_dir = os.path.abspath(os.path.dirname(tsp_filename))
             tsp_basename = os.path.basename(tsp_filename)
             
             # Create the Docker command
             docker_cmd = [
                 'docker', 'run', '--rm', '-t',
-                '-v', f'{tsp_dir}:/usr/local/opt/concorde/',
+                '-v', f'{tsp_dir}:/data',  # Map to /data inside container
                 'alehkot/concorde-tsp',
                 f'/data/{tsp_basename}'
             ]
@@ -396,8 +396,17 @@ class ToolpathOptimizer:
                                    stdout=subprocess.PIPE, 
                                    stderr=subprocess.PIPE)
             
+            # Log stdout and stderr for debugging
+            stdout_output = result.stdout.decode('utf-8')
+            stderr_output = result.stderr.decode('utf-8')
+            
+            if stdout_output:
+                print(f"  Concorde stdout: {stdout_output}")
+            if stderr_output:
+                print(f"  Concorde stderr: {stderr_output}")
+            
             if result.returncode != 0:
-                print(f"  Error running Concorde via Docker: {result.stderr.decode('utf-8')}")
+                print(f"  Error running Concorde via Docker (return code: {result.returncode})")
                 print("  Falling back to greedy approach")
                 return None
             
