@@ -1,5 +1,9 @@
 .env
 
+src/__pycache__
+tests/__pycache__
+*.pyc
+
 node_modules
 /built.mjs
 /package-lock.json
