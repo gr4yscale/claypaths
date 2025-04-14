@@ -545,3 +545,72 @@ class ToolpathOptimizer:
         
         plt.tight_layout()
         plt.show(block=False)
+    def visualize_layer_transitions(self, layers, optimized_paths):
+        """
+        Visualize the transitions between layers.
+        
+        Args:
+            layers (list): List of layer polygons
+            optimized_paths (list): List of optimized paths for each layer
+        """
+        if not layers or not optimized_paths or len(layers) < 2:
+            print("Not enough layers to visualize transitions")
+            return
+        
+        # Create a 3D plot
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Set colors for different layers
+        colors = plt.cm.viridis(np.linspace(0, 1, len(layers)))
+        
+        # Plot each layer and its path
+        for i, (layer, path, color) in enumerate(zip(layers, optimized_paths, colors)):
+            if not path:
+                continue
+            
+            # Extract path coordinates
+            path_x, path_y = zip(*path)
+            z_height = i  # Use layer index as z-height for visualization
+            
+            # Plot the layer path
+            ax.plot(path_x, path_y, [z_height] * len(path_x), 
+                   color=color, linewidth=2, label=f'Layer {i+1}')
+            
+            # Mark start and end points
+            ax.scatter(path_x[0], path_y[0], z_height, 
+                      color='green', s=100, marker='o', label=f'Start {i+1}' if i==0 else "")
+            ax.scatter(path_x[-1], path_y[-1], z_height, 
+                      color='red', s=100, marker='o', label=f'End {i+1}' if i==0 else "")
+            
+            # If not the first layer, draw a line connecting to the previous layer
+            if i > 0 and optimized_paths[i-1]:
+                prev_end = optimized_paths[i-1][-1]
+                curr_start = path[0]
+                
+                # Draw a line connecting the layers
+                ax.plot([prev_end[0], curr_start[0]], 
+                       [prev_end[1], curr_start[1]], 
+                       [i-1, i], 'k--', linewidth=1.5)
+                
+                # Calculate and display the travel distance
+                travel_dist = self._euclidean_distance(prev_end, curr_start)
+                mid_x = (prev_end[0] + curr_start[0]) / 2
+                mid_y = (prev_end[1] + curr_start[1]) / 2
+                mid_z = i - 0.5
+                ax.text(mid_x, mid_y, mid_z, f"{travel_dist:.2f}mm", 
+                       color='black', fontsize=9, ha='center')
+        
+        # Set labels and title
+        ax.set_xlabel('X (mm)')
+        ax.set_ylabel('Y (mm)')
+        ax.set_zlabel('Layer')
+        ax.set_title('Layer Transitions Visualization')
+        
+        # Add a legend for the first few items only (to avoid clutter)
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='upper left')
+        
+        plt.tight_layout()
+        plt.show(block=False)

@@ -105,6 +105,10 @@ def main():
                               f"{travel_dist:.2f}mm")
                 else:
                     print(f"\nLayer {layer_idx+1}: No valid path generated")
+            
+            # Visualize the transitions between layers
+            print("\nVisualizing layer transitions...")
+            optimizer.visualize_layer_transitions(layers_to_process, optimized_paths)
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
