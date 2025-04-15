@@ -1,0 +1,4 @@
+
+
+toolpath_width: 0.4  # Width of the toolpath in mm
+layer_height: 1.0  # Height of each layer in mm

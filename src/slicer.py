@@ -3,8 +3,9 @@ from stl import mesh
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon, LineString, MultiPolygon
 from shapely.ops import polygonize, unary_union
+from src.config import get_config
 
-def slice_mesh(stl_mesh, layer_height=0.2):
+def slice_mesh(stl_mesh, layer_height=None):
     """
     Slice the mesh into horizontal layers.
     
@@ -22,6 +23,11 @@ def slice_mesh(stl_mesh, layer_height=0.2):
     # Get mesh bounds
     min_coords = np.min(stl_mesh.vectors.reshape([-1, 3]), axis=0)
     max_coords = np.max(stl_mesh.vectors.reshape([-1, 3]), axis=0)
+    
+    # Use configuration value if layer_height is not provided
+    if layer_height is None:
+        config = get_config()
+        layer_height = config['layer_height']
     
     # Calculate number of layers
     z_min, z_max = min_coords[2], max_coords[2]

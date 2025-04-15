@@ -5,19 +5,26 @@ import subprocess
 import os
 import tempfile
 import re
+from src.config import get_config
 
 class ToolpathOptimizer:
     """
     Optimizes toolpaths using TSP solver and greedy algorithms to minimize travel distance.
     """
     
-    def __init__(self, toolpath_width=0.4):
+    def __init__(self, toolpath_width=None):
         """
         Initialize the toolpath optimizer.
         
         Args:
-            toolpath_width (float): Width of the toolpath in mm
+            toolpath_width (float, optional): Width of the toolpath in mm. 
+                                             If None, uses value from config.
         """
+        # Use configuration value if toolpath_width is not provided
+        if toolpath_width is None:
+            config = get_config()
+            toolpath_width = config['toolpath_width']
+            
         self.toolpath_width = toolpath_width
         self.total_cost = 0.0
         self.layer_paths = []

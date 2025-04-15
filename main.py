@@ -5,6 +5,7 @@ from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.region_fill import generate_continuous_fill, visualize_fill_path
 from src.toolpath_optimizer import ToolpathOptimizer
+from src.config import get_config
 
 
 def main():
@@ -62,7 +63,8 @@ def main():
         
         # Step 2: Slice the model into layers
         print("\nStep 2: Slicing the model into layers")
-        layer_height = 1.0  # Default layer height in mm
+        config = get_config()
+        layer_height = config['layer_height']
         layers = slice_mesh(stl_mesh, layer_height)
         
         # Optionally visualize the original layers again if needed
@@ -71,7 +73,8 @@ def main():
         
         # Step 3: Generate and optimize region fill for each layer
         print("\nStep 3: Generating and optimizing region fill for layers")
-        toolpath_width = 0.4  # Default toolpath width in mm
+        config = get_config()
+        toolpath_width = config['toolpath_width']
         
         # Create a toolpath optimizer
         optimizer = ToolpathOptimizer(toolpath_width)

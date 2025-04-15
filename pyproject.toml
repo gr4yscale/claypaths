@@ -10,5 +10,6 @@ dependencies = [
     "numpy-stl>=3.2.0",
     "pygobject>=3.52.3",
     "pytest>=8.3.5",
+    "pyyaml>=6.0.2",
     "shapely>=2.1.0",
 ]
