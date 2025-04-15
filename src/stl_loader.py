@@ -33,6 +33,13 @@ def visualize_stl(stl_mesh):
     Args:
         stl_mesh: The mesh object to visualize
     """
+    # Check if visualization is enabled
+    from src.config import get_config
+    config = get_config()
+    if not config.get('visualize_stl_mesh', True):
+        print("STL mesh visualization disabled in config")
+        return
+        
     if stl_mesh is None:
         print("No mesh to visualize")
         return

@@ -62,6 +62,10 @@ class ToolpathOptimizer:
                 fill_path = fill_generator(polygon, self.toolpath_width)
                 
                 if fill_path and len(fill_path) > 1:
+                    # Visualize the fill path for this polygon
+                    from src.region_fill import visualize_fill_path
+                    visualize_fill_path(polygon, fill_path, f"Layer {i+1}, Polygon {j+1} Fill Path")
+                    
                     # Split the path into segments if it's too long
                     segments = self._split_path_into_segments(fill_path)
                     layer_curves.extend(segments)
@@ -453,6 +457,12 @@ class ToolpathOptimizer:
             optimized_path (list): Optimized path for the layer
             layer_idx (int): Layer index
         """
+        # Check if visualization is enabled
+        config = get_config()
+        if not config.get('visualize_optimized_paths', True):
+            print(f"Optimized path visualization disabled in config")
+            return
+            
         fig, ax = plt.subplots(figsize=(10, 10))
         
         # Plot the polygons
@@ -503,6 +513,12 @@ class ToolpathOptimizer:
             layers (list): List of layer polygons
             optimized_paths (list): List of optimized paths for each layer
         """
+        # Check if visualization is enabled
+        config = get_config()
+        if not config.get('visualize_layer_transitions', True):
+            print("Layer transition visualization disabled in config")
+            return
+            
         if not layers or not optimized_paths or len(layers) < 2:
             print("Not enough layers to visualize transitions")
             return

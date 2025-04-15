@@ -174,6 +174,13 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
         path (list): List of points representing the path
         title (str): Title for the plot
     """
+    # Check if visualization is enabled
+    from src.config import get_config
+    config = get_config()
+    if not config.get('visualize_fill_paths', True):
+        print("Fill path visualization disabled in config")
+        return
+        
     fig, ax = plt.subplots(figsize=(10, 10))
     
     # Plot the polygon

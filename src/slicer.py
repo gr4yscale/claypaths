@@ -1,7 +1,7 @@
 import numpy as np
 from stl import mesh
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, LineString, MultiPolygon
+from shapely.geometry import Polygon, LineString, MultiPolygon, MultiLineString
 from shapely.ops import polygonize, unary_union
 from src.config import get_config
 
@@ -133,19 +133,23 @@ def slice_at_height(stl_mesh, z_height):
             # Let's log this and return the empty list.
             # A more advanced approach could involve snapping vertices or more careful buffering.
             print(f"  Warning: polygonize did not create polygons from segments at z={z_height:.2f}. Segments might not form closed loops.")
-            # Optionally, visualize the problematic segments:
-            # if isinstance(merged_lines, (LineString, MultiLineString)):
-            #     fig, ax = plt.subplots()
-            #     if isinstance(merged_lines, LineString):
-            #         x, y = merged_lines.xy
-            #         ax.plot(x, y, 'r-')
-            #     else: # MultiLineString
-            #         for line in merged_lines.geoms:
-            #             x, y = line.xy
-            #             ax.plot(x, y, 'r-')
-            #     ax.set_title(f"Problematic Segments at z={z_height:.2f}")
-            #     ax.set_aspect('equal')
-            #     plt.show(block=False)
+            
+            # Check if visualization of problematic segments is enabled
+            config = get_config()
+            if config.get('visualize_problematic_segments', False):
+                # Visualize the problematic segments
+                if isinstance(merged_lines, (LineString, MultiLineString)):
+                    fig, ax = plt.subplots()
+                    if isinstance(merged_lines, LineString):
+                        x, y = merged_lines.xy
+                        ax.plot(x, y, 'r-')
+                    else: # MultiLineString
+                        for line in merged_lines.geoms:
+                            x, y = line.xy
+                            ax.plot(x, y, 'r-')
+                    ax.set_title(f"Problematic Segments at z={z_height:.2f}")
+                    ax.set_aspect('equal')
+                    plt.show(block=False)
 
         # Ensure all returned geometries are valid Polygons
         valid_polygons = [p for p in polygons if isinstance(p, Polygon) and p.is_valid and not p.is_empty]
@@ -167,6 +171,13 @@ def visualize_layer(layer_contours, layer_num, z_height):
         layer_num (int): Layer number
         z_height (float): Height of the layer
     """
+    # Check if visualization is enabled
+    from src.config import get_config
+    config = get_config()
+    if not config.get('visualize_layer_contours', True):
+        print(f"Layer contour visualization disabled in config")
+        return
+        
     if not layer_contours:
         print(f"No contours to visualize for layer {layer_num}")
         return
@@ -201,6 +212,13 @@ def visualize_layers(layers, min_z, layer_height, num_to_show=5):
         layer_height (float): Height of each layer
         num_to_show (int): Number of layers to visualize
     """
+    # Check if visualization is enabled
+    from src.config import get_config
+    config = get_config()
+    if not config.get('visualize_layer_contours', True):
+        print("Layer contour visualization disabled in config")
+        return
+        
     if not layers:
         print("No layers to visualize")
         return

@@ -7,6 +7,13 @@ DEFAULT_CONFIG = {
     'layer_height': 1.0,    # Default layer height in mm
     'max_layers_to_process': 6,  # Maximum number of layers to process
     'optimization_method': 'greedy',  # Preferred optimization method
+   
+    'visualize_stl_mesh': False,
+    'visualize_layer_contours': False,
+    'visualize_fill_paths': False,
+    'visualize_optimized_paths': False,
+    'visualize_layer_transitions': False,
+    'visualize_problematic_segments': False,
 }
 
 _config = None
