@@ -81,8 +81,12 @@ def main():
         
         # Process all layers
         if layers and len(layers) > 0:
-            # Limit the number of layers to process for testing
-            num_layers_to_process = min(5, len(layers))
+            # Get max layers to process from config
+            config = get_config()
+            max_layers = config['max_layers_to_process']
+            
+            # Limit the number of layers to process
+            num_layers_to_process = min(max_layers, len(layers))
             layers_to_process = layers[:num_layers_to_process]
             
             print(f"Processing {num_layers_to_process} layers...")

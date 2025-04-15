@@ -81,17 +81,23 @@ class ToolpathOptimizer:
         print(f"Toolpath optimization complete. Total cost: {self.total_cost:.2f}")
         return optimized_paths
     
-    def _split_path_into_segments(self, path, max_points=1000):
+    def _split_path_into_segments(self, path, max_points=None):
         """
         Split a long path into smaller segments for optimization.
         
         Args:
             path (list): List of points representing the path
-            max_points (int): Maximum number of points per segment
+            max_points (int, optional): Maximum number of points per segment.
+                                       If None, uses value from config.
             
         Returns:
             list: List of path segments
         """
+        # Use configuration value if max_points is not provided
+        if max_points is None:
+            config = get_config()
+            max_points = config['max_points_per_segment']
+            
         if len(path) <= max_points:
             return [path]
         
@@ -167,11 +173,14 @@ class ToolpathOptimizer:
             
             # Scale the distance matrix to avoid "edge too long" errors
             # Concorde has limits on edge lengths, so we'll scale to a reasonable range
+            config = get_config()
+            tsp_scale_factor = config['tsp_scale_factor']
+            
             if np.max(distance_matrix) > 0:
                 # Scale to a range that Concorde can handle (typically max of 32767)
-                scale_factor = min(100, 30000 / max(1, np.max(distance_matrix)))
+                scale_factor = min(tsp_scale_factor, 30000 / max(1, np.max(distance_matrix)))
             else:
-                scale_factor = 100
+                scale_factor = tsp_scale_factor
                 
             print(f"  Scaling distances by factor {scale_factor:.2f}")
             
