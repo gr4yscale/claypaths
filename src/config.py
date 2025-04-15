@@ -6,6 +6,7 @@ DEFAULT_CONFIG = {
     'toolpath_width': 0.4,  # Default toolpath width in mm
     'layer_height': 1.0,    # Default layer height in mm
     'max_layers_to_process': 6,  # Maximum number of layers to process
+    'optimization_method': 'greedy',  # Preferred optimization method
 }
 
 _config = None

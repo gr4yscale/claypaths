@@ -191,18 +191,28 @@ class ToolpathOptimizer:
             
             tsp_file.write(f"EOF\n".encode())
         
-        # Call Concorde TSP solver if available, otherwise use a simple greedy approach
-        try:
-            # Try to run Concorde
-            tsp_tour = self._run_concorde(tsp_filename)
-            
-            if not tsp_tour:
+        # Get the preferred optimization method from config
+        config = get_config()
+        optimization_method = config.get('optimization_method', 'greedy')
+        
+        # Use the specified optimization method
+        if optimization_method.lower() == 'greedy':
+            print("  Using greedy TSP optimization method")
+            tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
+        else:  # Default to Concorde
+            try:
+                # Try to run Concorde
+                print("  Using Concorde TSP optimization method")
+                tsp_tour = self._run_concorde(tsp_filename)
+                
+                if not tsp_tour:
+                    # Fall back to greedy approach
+                    print("  Concorde failed, falling back to greedy approach")
+                    tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
+            except Exception as e:
+                print(f"  Error running TSP solver: {e}")
                 # Fall back to greedy approach
                 tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
-        except Exception as e:
-            print(f"  Error running TSP solver: {e}")
-            # Fall back to greedy approach
-            tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
         
         # Clean up the temporary file
         try:
