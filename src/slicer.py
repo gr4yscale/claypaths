@@ -38,8 +38,12 @@ def slice_mesh(stl_mesh, layer_height=None):
     # Initialize layers
     layers = []
     
-    # Process each layer (limited to 6 for testing)
-    for i in range(min(num_layers, 6)):
+    # Get max layers to process from config
+    config = get_config()
+    max_layers_to_process = config.get('max_layers_to_process', 6)
+    
+    # Process each layer (limited by max_layers_to_process)
+    for i in range(min(num_layers, max_layers_to_process)):
         z = z_min + i * layer_height
         layer_contours = slice_at_height(stl_mesh, z)
         layers.append(layer_contours)
