@@ -3,8 +3,8 @@
 max_layers_to_process: 5                # For quicker test cycles
 
 # Print settings (shared)
-toolpath_width: 0.4                     # Width of the toolpath in mm
-layer_height: 1.0                       # Height of each layer in mm
+toolpath_width: 1.0                     # Width of the toolpath in mm
+layer_height: 0.6                       # Height of each layer in mm
 
 # Slicer
 visualize_layer_contours: False         # outer contour polygon for a layer slice 
@@ -21,3 +21,10 @@ visualize_fill_paths: False             # The region fill path before optimizati
 
 # Model loader
 visualize_stl_mesh: False               # the full 3d mesh
+
+# GCode generator
+gcode_flavor: "klipper"                 # GCode flavor, either "klipper" or "marlin"
+travel_speed: 20                        # Travel speed in mm/s
+print_speed: 20                         # Print speed in mm/s
+acceleration: 500                       # Acceleration in mm/s²
+z_lift: 2                               # Z lift height in mm

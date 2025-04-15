@@ -9,18 +9,22 @@ class GCodeGenerator:
     Only includes movement commands, no extrusion.
     """
     
-    def __init__(self, flavor="klipper"):
+    def __init__(self, flavor=None):
         """
         Initialize the GCode generator.
         
         Args:
-            flavor (str): GCode flavor, either "klipper" or "marlin"
+            flavor (str, optional): GCode flavor, either "klipper" or "marlin".
+                                   If None, uses the value from config.
         """
-        self.flavor = flavor.lower()
-        self.travel_speed = 100  # mm/s
-        self.print_speed = 50    # mm/s
-        self.acceleration = 1000 # mm/s²
-        self.z_lift = 5          # mm
+        from src.config import get_config
+        config = get_config()
+        
+        self.flavor = flavor.lower() if flavor else config['gcode_flavor'].lower()
+        self.travel_speed = config['travel_speed']  # mm/s
+        self.print_speed = config['print_speed']    # mm/s
+        self.acceleration = config['acceleration']  # mm/s²
+        self.z_lift = config['z_lift']              # mm
         
     def generate_header(self):
         """Generate the GCode header with initialization commands."""

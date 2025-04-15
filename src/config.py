@@ -14,6 +14,13 @@ DEFAULT_CONFIG = {
     'visualize_optimized_paths': False,
     'visualize_layer_transitions': False,
     'visualize_problematic_segments': False,
+    
+    # GCode generator settings
+    'gcode_flavor': 'klipper',  # GCode flavor, either "klipper" or "marlin"
+    'travel_speed': 100,        # Travel speed in mm/s
+    'print_speed': 50,          # Print speed in mm/s
+    'acceleration': 1000,       # Acceleration in mm/s²
+    'z_lift': 5,                # Z lift height in mm
 }
 
 _config = None

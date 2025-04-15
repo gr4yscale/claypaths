@@ -120,7 +120,7 @@ def main():
             
             # Generate GCode from optimized paths
             print("\nGenerating GCode from optimized paths...")
-            gcode_gen = GCodeGenerator(flavor="klipper")
+            gcode_gen = GCodeGenerator()  # Will use flavor from config
             gcode = gcode_gen.generate_gcode(layers_to_process, optimized_paths, mesh_info['min_coords'][2])
             
             # Save GCode to file
