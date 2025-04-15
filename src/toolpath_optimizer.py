@@ -408,8 +408,9 @@ class ToolpathOptimizer:
             docker_cmd = [
                 'docker', 'run', '--rm', '-t',
                 '-v', f'{tsp_dir}:/data',  # Map to /data inside container
+                '-w', '/data',  # Set working directory to /data
                 'alehkot/concorde-tsp',
-                f'/data/{tsp_basename}'
+                f'{tsp_basename}'  # Use relative path since we set the working directory
             ]
             
             # Run Concorde via Docker
