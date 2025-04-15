@@ -24,7 +24,7 @@ class ToolpathOptimizer:
     
     def optimize_layers(self, layers, fill_generator):
         """
-        Optimize toolpaths across all layers using a two-pass approach.
+        Optimize toolpaths across all layers.
         
         Args:
             layers (list): List of layer contours, where each layer is a list of shapely Polygons
@@ -36,41 +36,16 @@ class ToolpathOptimizer:
         if not layers:
             return []
         
-        print("\nOptimizing toolpaths across layers (two-pass approach)...")
-        
-        # First pass: Generate and optimize each layer independently
-        first_pass_paths, layer_curves_list, layer_endpoints = self._first_pass_optimization(layers, fill_generator)
-        
-        # Second pass: Refine paths considering layer transitions
-        final_paths = self._second_pass_optimization(first_pass_paths, layer_curves_list, layer_endpoints)
-        
-        print(f"Toolpath optimization complete. Total cost: {self.total_cost:.2f}")
-        return final_paths
-    
-    def _first_pass_optimization(self, layers, fill_generator):
-        """
-        First pass: Generate and optimize each layer independently.
-        
-        Args:
-            layers (list): List of layer contours
-            fill_generator (function): Function to generate fill paths
-            
-        Returns:
-            tuple: (first_pass_paths, layer_curves_list, layer_endpoints)
-        """
-        print("\nFirst pass: Optimizing individual layers...")
-        first_pass_paths = []
-        layer_curves_list = []  # Store curves for each layer for second pass
-        layer_endpoints = []    # Store endpoints for each layer
+        print("\nOptimizing toolpaths across layers...")
+        optimized_paths = []
+        prev_end_point = None
         
         for i, layer in enumerate(layers):
             print(f"Optimizing layer {i+1}/{len(layers)}...")
             
             if not layer or len(layer) == 0:
                 print(f"  No polygons in layer {i+1}, skipping")
-                first_pass_paths.append([])
-                layer_curves_list.append([])
-                layer_endpoints.append([])
+                optimized_paths.append([])
                 continue
             
             # Generate fill paths for each polygon in the layer
@@ -80,134 +55,45 @@ class ToolpathOptimizer:
                 fill_path = fill_generator(polygon, self.toolpath_width)
                 
                 if fill_path and len(fill_path) > 1:
-                    # Split the path into more segments to give optimizer more flexibility
-                    segments = self._split_path_into_segments(fill_path, min_segments=5)
+                    # Split the path into segments if it's too long
+                    segments = self._split_path_into_segments(fill_path)
                     layer_curves.extend(segments)
             
-            # Store the curves for this layer
-            layer_curves_list.append(layer_curves)
-            
-            # Optimize the ordering of curves within this layer (without considering previous layer)
+            # Optimize the ordering of curves within this layer
             if layer_curves:
-                optimized_layer_path = self._optimize_layer(layer_curves, None)  # No prev_end_point in first pass
-                first_pass_paths.append(optimized_layer_path)
+                optimized_layer_path = self._optimize_layer(layer_curves, prev_end_point)
+                optimized_paths.append(optimized_layer_path)
                 
-                # Store the endpoints for each layer's path
+                # Update the previous end point for the next layer
                 if optimized_layer_path:
-                    layer_endpoints.append((optimized_layer_path[0], optimized_layer_path[-1]))
-                else:
-                    layer_endpoints.append(None)
+                    prev_end_point = optimized_layer_path[-1]
             else:
                 print(f"  No valid curves in layer {i+1}, skipping")
-                first_pass_paths.append([])
-                layer_endpoints.append(None)
+                optimized_paths.append([])
         
-        return first_pass_paths, layer_curves_list, layer_endpoints
+        print(f"Toolpath optimization complete. Total cost: {self.total_cost:.2f}")
+        return optimized_paths
     
-    def _second_pass_optimization(self, first_pass_paths, layer_curves_list, layer_endpoints):
+    def _split_path_into_segments(self, path, max_points=1000):
         """
-        Second pass: Refine paths considering layer transitions.
-        
-        Args:
-            first_pass_paths (list): Paths from first pass
-            layer_curves_list (list): List of curves for each layer
-            layer_endpoints (list): Endpoints for each layer
-            
-        Returns:
-            list: Refined paths
-        """
-        print("\nSecond pass: Optimizing transitions between layers...")
-        final_paths = []
-        prev_end_point = None
-        self.total_cost = 0.0  # Reset cost for second pass
-        
-        for i, (path, curves, endpoints) in enumerate(zip(first_pass_paths, layer_curves_list, layer_endpoints)):
-            print(f"Refining layer {i+1}/{len(first_pass_paths)}...")
-            
-            if not path or not curves:
-                final_paths.append(path)
-                continue
-            
-            # For the first layer, just use the first pass result
-            if i == 0:
-                optimized_path = path
-            else:
-                # For subsequent layers, re-optimize considering the previous layer's end point
-                optimized_path = self._optimize_layer(curves, prev_end_point)
-                
-                # Calculate the travel distance between layers
-                if prev_end_point and optimized_path:
-                    travel_dist = self._euclidean_distance(prev_end_point, optimized_path[0])
-                    print(f"  Travel distance between layers {i} and {i+1}: {travel_dist:.2f}mm")
-            
-            final_paths.append(optimized_path)
-            
-            # Update the previous end point for the next layer
-            if optimized_path:
-                prev_end_point = optimized_path[-1]
-        
-        return final_paths
-    
-    def _split_path_into_segments(self, path, max_points=1000, min_segments=3):
-        """
-        Split a path into smaller segments for optimization.
-        Ensures at least min_segments are created if possible.
+        Split a long path into smaller segments for optimization.
         
         Args:
             path (list): List of points representing the path
             max_points (int): Maximum number of points per segment
-            min_segments (int): Minimum number of segments to create
             
         Returns:
             list: List of path segments
         """
-        # If path is too short to create min_segments with at least 2 points each
-        if len(path) < min_segments * 2:
-            # For very short paths, just return the original path
-            if len(path) <= 2:
-                return [path]
-            
-            # For slightly longer paths, create as many segments as possible
-            # with at least 2 points each
-            max_possible_segments = len(path) // 2
-            points_per_segment = len(path) // max_possible_segments
-            
-            segments = []
-            for i in range(max_possible_segments):
-                start_idx = i * points_per_segment
-                end_idx = min((i + 1) * points_per_segment, len(path))
-                
-                # Ensure the last segment gets any remaining points
-                if i == max_possible_segments - 1:
-                    end_idx = len(path)
-                
-                segment = path[start_idx:end_idx]
-                if len(segment) >= 2:
-                    segments.append(segment)
-            
-            return segments
-        
-        # Determine how many segments to create
         if len(path) <= max_points:
-            # For shorter paths, create at least min_segments
-            num_segments = min_segments
-        else:
-            # For longer paths, create more segments as needed
-            num_segments = (len(path) + max_points - 1) // max_points
-            num_segments = max(num_segments, min_segments)
-        
-        # Calculate points per segment
-        points_per_segment = len(path) // num_segments
+            return [path]
         
         segments = []
+        num_segments = (len(path) + max_points - 1) // max_points
+        
         for i in range(num_segments):
-            start_idx = i * points_per_segment
-            end_idx = min((i + 1) * points_per_segment, len(path))
-            
-            # Ensure the last segment gets any remaining points
-            if i == num_segments - 1:
-                end_idx = len(path)
-            
+            start_idx = i * max_points
+            end_idx = min((i + 1) * max_points, len(path))
             segment = path[start_idx:end_idx]
             
             if len(segment) > 1:
