@@ -5,6 +5,7 @@ from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.region_fill import generate_continuous_fill, visualize_fill_path
 from src.toolpath_optimizer import ToolpathOptimizer
+from src.gcode_generator import GCodeGenerator
 from src.config import get_config
 
 
@@ -116,6 +117,15 @@ def main():
             # Visualize the transitions between layers
             print("\nVisualizing layer transitions...")
             optimizer.visualize_layer_transitions(layers_to_process, optimized_paths)
+            
+            # Generate GCode from optimized paths
+            print("\nGenerating GCode from optimized paths...")
+            gcode_gen = GCodeGenerator(flavor="klipper")
+            gcode = gcode_gen.generate_gcode(layers_to_process, optimized_paths, mesh_info['min_coords'][2])
+            
+            # Save GCode to file
+            gcode_file = gcode_gen.save_gcode(gcode)
+            print(f"GCode saved to: {gcode_file}")
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
