@@ -118,14 +118,18 @@ def main():
             print("\nVisualizing layer transitions...")
             optimizer.visualize_layer_transitions(layers_to_process, optimized_paths)
             
-            # Generate GCode from optimized paths
-            print("\nGenerating GCode from optimized paths...")
-            gcode_gen = GCodeGenerator()  # Will use flavor from config
-            gcode = gcode_gen.generate_gcode(layers_to_process, optimized_paths, mesh_info['min_coords'][2])
-            
-            # Save GCode to file
-            gcode_file = gcode_gen.save_gcode(gcode)
-            print(f"GCode saved to: {gcode_file}")
+            # Check if GCode generation is enabled in config
+            if config.get('generate_gcode', True):
+                # Generate GCode from optimized paths
+                print("\nGenerating GCode from optimized paths...")
+                gcode_gen = GCodeGenerator()  # Will use flavor from config
+                gcode = gcode_gen.generate_gcode(layers_to_process, optimized_paths, mesh_info['min_coords'][2])
+                
+                # Save GCode to file
+                gcode_file = gcode_gen.save_gcode(gcode)
+                print(f"GCode saved to: {gcode_file}")
+            else:
+                print("\nGCode generation is disabled in config")
 
     else:
         print(f"Failed to load STL file: {stl_file_path}")
