@@ -471,59 +471,11 @@ def slice_at_height(stl_mesh, z_height):
             
             # Create a new polygon with holes if needed
             if holes:
-                try:
-                    # Create a new polygon with holes
-                    new_poly = Polygon(largest_poly.exterior.coords, holes)
-                    # Validate the new polygon
-                    if new_poly.is_valid:
-                        # Replace the largest polygon with the new one that has holes
-                        final_polygons[0] = new_poly
-                        print(f"  Created polygon with {len(holes)} holes")
-                        
-                        # Debug information about the holes
-                        for i, hole_coords in enumerate(holes):
-                            hole_poly = Polygon(hole_coords)
-                            print(f"  Hole {i+1}: Area={hole_poly.area:.4f}, Valid={hole_poly.is_valid}")
-                    else:
-                        print(f"  Warning: Created polygon with holes is invalid, attempting to fix")
-                        fixed_poly = new_poly.buffer(0)
-                        if fixed_poly.is_valid:
-                            final_polygons[0] = fixed_poly
-                            print(f"  Successfully fixed polygon with holes")
-                            # Check if holes were preserved after fixing
-                            if len(list(fixed_poly.interiors)) > 0:
-                                print(f"  Fixed polygon has {len(list(fixed_poly.interiors))} holes")
-                            else:
-                                print(f"  Warning: Holes were lost during fixing process")
-                        else:
-                            print(f"  Warning: Could not fix polygon with holes, using original polygon")
-                except Exception as e:
-                    print(f"  Error creating polygon with holes: {e}")
-                    print(f"  Using original polygon without holes")
-                    
-                # Verify that the holes were properly added
-                if len(list(final_polygons[0].interiors)) > 0:
-                    print(f"  Verified polygon has {len(list(final_polygons[0].interiors))} holes")
-                else:
-                    print(f"  WARNING: Polygon should have holes but none were detected!")
-                    
-                    # Try a different approach to create the polygon with holes
-                    try:
-                        # Create a polygon for each hole
-                        hole_polygons = [Polygon(hole) for hole in holes]
-                        
-                        # Create a polygon with holes by subtracting the hole polygons
-                        result_poly = largest_poly
-                        for hole_poly in hole_polygons:
-                            if result_poly.contains(hole_poly):
-                                result_poly = result_poly.difference(hole_poly)
-                        
-                        if result_poly.is_valid:
-                            final_polygons[0] = result_poly
-                            print(f"  Successfully created polygon with holes using difference operation")
-                            print(f"  Polygon now has {len(list(result_poly.interiors))} holes")
-                    except Exception as e:
-                        print(f"  Error creating polygon with holes using difference: {e}")
+                # Create a new polygon with holes
+                new_poly = Polygon(largest_poly.exterior.coords, holes)
+                # Replace the largest polygon with the new one that has holes
+                final_polygons[0] = new_poly
+                print(f"  Created polygon with {len(holes)} holes")
             
             valid_polygons = final_polygons
 
@@ -556,33 +508,14 @@ def visualize_layer(layer_contours, layer_num, z_height):
     fig, ax = plt.subplots(figsize=(10, 10))
     
     # Plot each contour
-    for i, polygon in enumerate(layer_contours):
-        # Check if the polygon has holes
-        has_holes = len(list(polygon.interiors)) > 0
-        print(f"  Visualizing polygon {i+1} with {len(list(polygon.interiors))} holes")
-        
-        # Plot the exterior
+    for polygon in layer_contours:
         x, y = polygon.exterior.xy
-        ax.plot(x, y, 'b-', linewidth=2, label='Polygon Exterior' if i == 0 else "")
-        # Fill the exterior with a light color
-        ax.fill(x, y, 'b', alpha=0.1)
+        ax.plot(x, y, 'b-')
         
         # Plot holes if any
-        for j, interior in enumerate(polygon.interiors):
+        for interior in polygon.interiors:
             x, y = interior.xy
-            ax.plot(x, y, 'r-', linewidth=2, label='Hole' if j == 0 and i == 0 else "")
-            # Fill the hole with a light color to make it more visible
-            ax.fill(x, y, 'r', alpha=0.3)
-            # Add a text label for the hole
-            hole_center_x = sum(x) / len(x)
-            hole_center_y = sum(y) / len(y)
-            ax.text(hole_center_x, hole_center_y, f"Hole {j+1}", 
-                    ha='center', va='center', color='white', 
-                    bbox=dict(facecolor='red', alpha=0.7))
-            
-            # Print information about the hole
-            hole_poly = Polygon(interior)
-            print(f"  Polygon {i+1}, Hole {j+1}: Area={hole_poly.area:.4f}, Valid={hole_poly.is_valid}")
+            ax.plot(x, y, 'r-')
     
     ax.set_aspect('equal')
     ax.set_title(f"Layer {layer_num} (z={z_height:.2f}mm)")
