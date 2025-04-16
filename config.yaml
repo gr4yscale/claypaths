@@ -25,7 +25,5 @@ visualize_stl_mesh: False               # the full 3d mesh
 # GCode generator
 generate_gcode: True                    # Whether to generate GCode output
 gcode_flavor: "klipper"                 # GCode flavor, either "klipper" or "marlin"
-travel_speed: 20                        # Travel speed in mm/s
-print_speed: 20                         # Print speed in mm/s
+print_speed: 20                         # Movement speed in mm/s (consistent for all movements)
 acceleration: 500                       # Acceleration in mm/s²
-z_lift: 2                               # Z lift height in mm
