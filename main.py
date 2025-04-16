@@ -90,8 +90,28 @@ def main():
             
             print(f"Processing {num_layers_to_process} layers...")
             
-            # Generate optimized toolpaths for all layers
-            optimized_paths = optimizer.optimize_layers(layers_to_process, generate_continuous_fill)
+            # Generate fill paths for all layers first
+            all_layer_paths = []
+            
+            for layer_idx, layer in enumerate(layers_to_process):
+                print(f"\nGenerating fill paths for layer {layer_idx+1}/{len(layers_to_process)}...")
+                
+                # Generate fill paths for each polygon in the layer
+                layer_paths = []
+                for j, polygon in enumerate(layer):
+                    # Generate the fill path for this polygon
+                    fill_path = generate_continuous_fill(polygon, toolpath_width)
+                    
+                    if fill_path and len(fill_path) > 1:
+                        # Visualize the fill path for this polygon
+                        visualize_fill_path(polygon, fill_path, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path")
+                        layer_paths.append(fill_path)
+                
+                all_layer_paths.append(layer_paths)
+            
+            # Now optimize the paths across all layers
+            print("\nOptimizing paths across all layers...")
+            optimized_paths = optimizer.optimize_layers(layers_to_process, all_layer_paths)
             
             # Visualize the optimized paths
             for layer_idx, (layer, path) in enumerate(zip(layers_to_process, optimized_paths)):
@@ -116,9 +136,8 @@ def main():
             print("\nVisualizing layer transitions...")
             optimizer.visualize_layer_transitions(layers_to_process, optimized_paths)
             
-            # Check if GCode generation is enabled in config
+            # Generate GCode from optimized paths
             if config.get('generate_gcode', True):
-                # Generate GCode from optimized paths
                 print("\nGenerating GCode from optimized paths...")
                 gcode_gen = GCodeGenerator()  # Will use flavor from config
                 gcode = gcode_gen.generate_gcode(layers_to_process, optimized_paths, mesh_info['min_coords'][2])

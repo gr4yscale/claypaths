@@ -29,45 +29,37 @@ class ToolpathOptimizer:
         self.total_cost = 0.0
         self.layer_paths = []
     
-    def optimize_layers(self, layers, fill_generator):
+    def optimize_layers(self, layers, layer_paths):
         """
         Optimize toolpaths across all layers.
         
         Args:
             layers (list): List of layer contours, where each layer is a list of shapely Polygons
-            fill_generator (function): Function to generate fill paths for a polygon
+            layer_paths (list): List of paths for each layer, where each path is a list of points
             
         Returns:
             list: List of optimized paths for each layer
         """
-        if not layers:
+        if not layers or not layer_paths:
             return []
         
         print("\nOptimizing toolpaths across layers...")
         optimized_paths = []
         prev_end_point = None
         
-        for i, layer in enumerate(layers):
+        for i, (layer, paths) in enumerate(zip(layers, layer_paths)):
             print(f"Optimizing layer {i+1}/{len(layers)}...")
             
-            if not layer or len(layer) == 0:
-                print(f"  No polygons in layer {i+1}, skipping")
+            if not paths:
+                print(f"  No paths in layer {i+1}, skipping")
                 optimized_paths.append([])
                 continue
             
-            # Generate fill paths for each polygon in the layer
+            # Split the paths into segments if they're too long
             layer_curves = []
-            for j, polygon in enumerate(layer):
-                # Generate the fill path for this polygon
-                fill_path = fill_generator(polygon, self.toolpath_width)
-                
-                if fill_path and len(fill_path) > 1:
-                    # Visualize the fill path for this polygon
-                    from src.region_fill import visualize_fill_path
-                    visualize_fill_path(polygon, fill_path, f"Layer {i+1}, Polygon {j+1} Fill Path")
-                    
-                    # Split the path into segments if it's too long
-                    segments = self._split_path_into_segments(fill_path)
+            for path in paths:
+                if path and len(path) > 1:
+                    segments = self._split_path_into_segments(path)
                     layer_curves.extend(segments)
             
             # Optimize the ordering of curves within this layer
