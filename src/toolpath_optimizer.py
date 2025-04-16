@@ -73,11 +73,15 @@ class ToolpathOptimizer:
             # Optimize the ordering of curves within this layer
             if layer_curves:
                 optimized_layer_path = self._optimize_layer(layer_curves, prev_end_point)
-                optimized_paths.append(optimized_layer_path)
+                
+                # Smooth the optimized path for uniform point spacing
+                smoothed_path = self.smooth_path(optimized_layer_path)
+                optimized_paths.append(smoothed_path)
                 
                 # Update the previous end point for the next layer
-                if optimized_layer_path:
-                    prev_end_point = optimized_layer_path[-1]
+                if smoothed_path:
+                    prev_end_point = smoothed_path[-1]
+                    print(f"  Layer {i+1}: Generated smooth path with {len(smoothed_path)} points")
             else:
                 print(f"  No valid curves in layer {i+1}, skipping")
                 optimized_paths.append([])
@@ -447,6 +451,90 @@ class ToolpathOptimizer:
             float: Euclidean distance
         """
         return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        
+    def smooth_path(self, path, segment_length=None):
+        """
+        Smooth a path by resampling it with uniform point spacing.
+        
+        Args:
+            path (list): List of (x, y) points defining the path
+            segment_length (float, optional): Desired distance between points.
+                                             If None, uses value from config.
+                                             
+        Returns:
+            list: Smoothed path with uniform point spacing
+        """
+        if not path or len(path) < 2:
+            return path
+            
+        # If segment_length is not provided, use value from config
+        if segment_length is None:
+            config = get_config()
+            segment_length = config.get('path_smoothing_segment_length', self.toolpath_width / 2)
+            
+        # Calculate the total path length
+        total_length = 0
+        for i in range(len(path) - 1):
+            total_length += self._euclidean_distance(path[i], path[i+1])
+            
+        # Calculate the number of segments needed
+        num_segments = max(2, int(total_length / segment_length))
+        
+        # Create a new path with uniform spacing
+        smoothed_path = []
+        
+        # Always include the first point
+        smoothed_path.append(path[0])
+        
+        # Current position along the path
+        current_length = 0
+        current_segment = 0
+        target_length = segment_length
+        
+        for i in range(len(path) - 1):
+            p1 = path[i]
+            p2 = path[i+1]
+            segment_length_i = self._euclidean_distance(p1, p2)
+            
+            # Skip zero-length segments
+            if segment_length_i < 1e-6:
+                continue
+                
+            # Parametric position along this segment
+            t_start = 0
+            
+            # Process this segment until we move to the next one
+            while current_length + segment_length_i >= target_length:
+                # Calculate how far along this segment the next point should be
+                t = (target_length - current_length) / segment_length_i
+                
+                # Ensure t is between t_start and 1
+                t = min(1, max(t_start, t))
+                
+                # Interpolate to find the point
+                x = p1[0] + t * (p2[0] - p1[0])
+                y = p1[1] + t * (p2[1] - p1[1])
+                
+                # Add the point to the smoothed path
+                smoothed_path.append((x, y))
+                
+                # Update tracking variables
+                current_segment += 1
+                target_length = current_segment * segment_length
+                t_start = t
+                
+                # If we've reached the end of this segment, break
+                if abs(t - 1) < 1e-6:
+                    break
+            
+            # Update the current length along the path
+            current_length += segment_length_i
+        
+        # Always include the last point
+        if smoothed_path[-1] != path[-1]:
+            smoothed_path.append(path[-1])
+            
+        return smoothed_path
     
     def visualize_optimized_path(self, layer_polygons, optimized_path, layer_idx):
         """

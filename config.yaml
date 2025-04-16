@@ -21,9 +21,10 @@ visualize_fill_paths: False             # The region fill path before optimizati
 
 # Model loader
 visualize_stl_mesh: False               # the full 3d mesh
+path_smoothing_segment_length: 0.2      # Distance between points in smoothed path (mm)
 
 # GCode generator
 generate_gcode: True                    # Whether to generate GCode output
 gcode_flavor: "klipper"                 # GCode flavor, either "klipper" or "marlin"
-print_speed: 20                         # Movement speed in mm/s (consistent for all movements)
+print_speed: 20                         # Movement speed in mm/s
 acceleration: 500                       # Acceleration in mm/s²

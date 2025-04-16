@@ -18,10 +18,8 @@ DEFAULT_CONFIG = {
     # GCode generator settings
     'generate_gcode': True,     # Whether to generate GCode output
     'gcode_flavor': 'klipper',  # GCode flavor, either "klipper" or "marlin"
-    'travel_speed': 100,        # Travel speed in mm/s
-    'print_speed': 50,          # Print speed in mm/s
-    'acceleration': 1000,       # Acceleration in mm/s²
-    'z_lift': 5,                # Z lift height in mm
+    'print_speed': 10,          # Print speed in mm/s
+    'acceleration': 250,        # Acceleration in mm/s²
 }
 
 _config = None
