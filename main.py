@@ -34,7 +34,7 @@ def main():
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     
     #confirmed working, simple models
-    stl_file_path = os.path.join("models", "extruded-polygon.stl")
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "cuboid.stl")
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
@@ -44,7 +44,7 @@ def main():
 
     # complex shapes, problematic
     # holes are detected as solid rather than the cuboid
-    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
 
     # cuboid detected as solid rather than cylinder
     #stl_file_path = os.path.join("models", "cylinder-minus-cuboid.stl")
