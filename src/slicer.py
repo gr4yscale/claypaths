@@ -222,6 +222,8 @@ def visualize_layers(layers, min_z, layer_height, num_to_show=5):
     if not layers:
         print("No layers to visualize")
         return
+
+    print("\nVisualizing sample layers (original contours)...")
     
     # Select layers to visualize (evenly distributed)
     total_layers = len(layers)

@@ -59,8 +59,7 @@ def main():
         print(f"  Max coordinates: {mesh_info['max_coords']}")
         
         # Visualize the STL file (commented out)
-        # print("\nVisualizing the STL mesh...")
-        #visualize_stl(stl_mesh)
+        visualize_stl(stl_mesh)
         
         # Step 2: Slice the model into layers
         print("\nStep 2: Slicing the model into layers")
@@ -69,7 +68,6 @@ def main():
         layers = slice_mesh(stl_mesh, layer_height)
         
         # Optionally visualize the original layers again if needed
-        print("\nVisualizing sample layers (original contours)...")
         visualize_layers(layers, mesh_info['min_coords'][2], layer_height)
         
         # Step 3: Generate and optimize region fill for each layer

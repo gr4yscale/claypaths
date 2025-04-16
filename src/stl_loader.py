@@ -43,7 +43,9 @@ def visualize_stl(stl_mesh):
     if stl_mesh is None:
         print("No mesh to visualize")
         return
-    
+
+    print("\nVisualizing the STL mesh...")
+
     # Create a new plot
     figure = plt.figure(figsize=(10, 10))
     axes = figure.add_subplot(111, projection='3d')
