@@ -156,6 +156,46 @@ def slice_at_height(stl_mesh, z_height):
         if len(valid_polygons) != len(polygons):
              print(f"  Warning: Filtered out {len(polygons) - len(valid_polygons)} invalid/non-polygon geometries.")
 
+        # Determine which polygons are holes and which are solid areas
+        # For models with holes, we need to identify the outer contour as the solid area
+        if len(valid_polygons) > 1:
+            # Find the polygon with the largest area - this is likely the outer contour
+            areas = [p.area for p in valid_polygons]
+            largest_idx = areas.index(max(areas))
+            
+            # Check if any polygons are contained within others
+            final_polygons = []
+            for i, poly in enumerate(valid_polygons):
+                # If this is the largest polygon, keep it
+                if i == largest_idx:
+                    final_polygons.append(poly)
+                    continue
+                
+                # Check if this polygon is contained within the largest polygon
+                # If it is, it's likely a hole and should be handled differently
+                if valid_polygons[largest_idx].contains(poly):
+                    # This is a hole - we'll handle it by creating a polygon with a hole
+                    print(f"  Detected a hole in the largest polygon at z={z_height:.2f}")
+                    # We don't add it separately - it will be added as a hole in the largest polygon
+                else:
+                    # This is a separate solid area
+                    final_polygons.append(poly)
+            
+            # Create a new polygon with holes if needed
+            if len(final_polygons) == 1 and len(valid_polygons) > 1:
+                outer_poly = final_polygons[0]
+                holes = []
+                for poly in valid_polygons:
+                    if poly != outer_poly and outer_poly.contains(poly):
+                        holes.append(poly.exterior.coords)
+                
+                if holes:
+                    # Create a new polygon with holes
+                    new_poly = Polygon(outer_poly.exterior.coords, [hole for hole in holes])
+                    final_polygons = [new_poly]
+            
+            valid_polygons = final_polygons
+
         print(f"  Created {len(valid_polygons)} valid polygons at z={z_height:.2f}")
         return valid_polygons
     except Exception as e:
