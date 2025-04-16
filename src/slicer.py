@@ -141,19 +141,114 @@ def slice_at_height(stl_mesh, z_height):
             # Small buffer method
             buffer_size = config.get('buffer_size_small', 0.001)
             print(f"  Using small buffer polygonization method (size={buffer_size}) at z={z_height:.2f}")
-            buffered_lines = merged_lines.buffer(buffer_size)
-            if not buffered_lines.is_empty:
-                if isinstance(buffered_lines, Polygon):
-                    polygons = [buffered_lines]
-                elif isinstance(buffered_lines, MultiPolygon):
-                    polygons = list(buffered_lines.geoms)
+            
+            # Get the bounding box of the merged lines to estimate expected polygon size
+            minx, miny, maxx, maxy = merged_lines.bounds
+            expected_area = (maxx - minx) * (maxy - miny) * 0.5  # Rough estimate
+            print(f"  Expected polygon area based on bounding box: {expected_area:.4f}")
+            
+            # Try with increasing buffer sizes until we get reasonable polygons
+            buffer_sizes = [buffer_size, buffer_size*2, buffer_size*5, buffer_size*10, buffer_size*20, buffer_size*50]
+            min_reasonable_area = max(1.0, expected_area * 0.1)  # Minimum area to consider a polygon "reasonable"
+            
+            best_polygons = []
+            best_area_sum = 0
+            
+            for try_buffer in buffer_sizes:
+                print(f"  Trying buffer size: {try_buffer}")
+                try:
+                    buffered_lines = merged_lines.buffer(try_buffer)
+                    
+                    if not buffered_lines.is_empty:
+                        current_polygons = []
+                        current_area_sum = 0
+                        
+                        if isinstance(buffered_lines, Polygon):
+                            if buffered_lines.area > min_reasonable_area:
+                                print(f"  Created polygon with area: {buffered_lines.area:.4f}")
+                                current_polygons = [buffered_lines]
+                                current_area_sum = buffered_lines.area
+                        elif isinstance(buffered_lines, MultiPolygon):
+                            # Filter out tiny polygons
+                            reasonable_polys = [p for p in buffered_lines.geoms if p.area > min_reasonable_area]
+                            if reasonable_polys:
+                                print(f"  Created {len(reasonable_polys)} polygons with total area: {sum(p.area for p in reasonable_polys):.4f}")
+                                current_polygons = reasonable_polys
+                                current_area_sum = sum(p.area for p in reasonable_polys)
+                        
+                        # Keep track of the best result so far
+                        if current_area_sum > best_area_sum:
+                            best_polygons = current_polygons
+                            best_area_sum = current_area_sum
+                            print(f"  New best result with total area: {best_area_sum:.4f}")
+                            
+                        # If we've found a good result, stop trying larger buffers
+                        if current_area_sum > expected_area * 0.5:
+                            print(f"  Found good result (area: {current_area_sum:.4f} vs expected: {expected_area:.4f})")
+                            break
+                except Exception as e:
+                    print(f"  Error with buffer size {try_buffer}: {e}")
+            
+            # Use the best result we found
+            if best_polygons:
+                print(f"  Using best result with {len(best_polygons)} polygons, total area: {best_area_sum:.4f}")
+                polygons = best_polygons
+            else:
+                print(f"  Warning: Could not create reasonable sized polygons")
+                # Try one last approach - create a convex hull from all line endpoints
+                try:
+                    from shapely.geometry import MultiPoint
+                    
+                    # Extract all endpoints from the lines
+                    points = []
+                    if isinstance(merged_lines, LineString):
+                        points.extend(list(merged_lines.coords))
+                    elif isinstance(merged_lines, MultiLineString):
+                        for line in merged_lines.geoms:
+                            points.extend(list(line.coords))
+                    
+                    if points:
+                        hull = MultiPoint(points).convex_hull
+                        if isinstance(hull, Polygon) and hull.area > min_reasonable_area:
+                            print(f"  Created convex hull with area: {hull.area:.4f}")
+                            polygons = [hull]
+                except Exception as e:
+                    print(f"  Error creating convex hull: {e}")
                     
         elif polygonization_method == 'large_buffer':
             # Large buffer method
             buffer_size = config.get('buffer_size_large', 0.01)
             print(f"  Using large buffer polygonization method (size={buffer_size}) at z={z_height:.2f}")
-            buffered_lines = merged_lines.buffer(buffer_size)
-            if not buffered_lines.is_empty:
+            
+            # Try with increasing buffer sizes until we get reasonable polygons
+            buffer_sizes = [buffer_size, buffer_size*2, buffer_size*5, buffer_size*10]
+            min_reasonable_area = 1.0  # Minimum area to consider a polygon "reasonable"
+            
+            for try_buffer in buffer_sizes:
+                print(f"  Trying buffer size: {try_buffer}")
+                buffered_lines = merged_lines.buffer(try_buffer)
+                
+                if not buffered_lines.is_empty:
+                    if isinstance(buffered_lines, Polygon):
+                        if buffered_lines.area > min_reasonable_area:
+                            print(f"  Created polygon with area: {buffered_lines.area:.4f}")
+                            polygons = [buffered_lines]
+                            break
+                        else:
+                            print(f"  Polygon too small (area: {buffered_lines.area:.4f}), trying larger buffer")
+                    elif isinstance(buffered_lines, MultiPolygon):
+                        # Filter out tiny polygons
+                        reasonable_polys = [p for p in buffered_lines.geoms if p.area > min_reasonable_area]
+                        if reasonable_polys:
+                            print(f"  Created {len(reasonable_polys)} polygons with reasonable area")
+                            polygons = reasonable_polys
+                            break
+                        else:
+                            print(f"  All polygons too small, trying larger buffer")
+            
+            # If we still don't have reasonable polygons, use the last buffer result anyway
+            if not polygons:
+                print(f"  Warning: Could not create reasonable sized polygons, using last buffer result")
                 if isinstance(buffered_lines, Polygon):
                     polygons = [buffered_lines]
                 elif isinstance(buffered_lines, MultiPolygon):
@@ -197,6 +292,102 @@ def slice_at_height(stl_mesh, z_height):
                 print(f"  Warning: Manual close method requires MultiLineString but got {type(merged_lines)}")
                 # Fall back to standard method
                 polygons = list(polygonize(merged_lines))
+        elif polygonization_method == 'hybrid':
+            # Hybrid method - try standard polygonization first, then fall back to buffering if needed
+            print(f"  Using hybrid polygonization method at z={z_height:.2f}")
+            
+            # Get the bounding box of the merged lines to estimate expected polygon size
+            minx, miny, maxx, maxy = merged_lines.bounds
+            expected_area = (maxx - minx) * (maxy - miny) * 0.5  # Rough estimate
+            print(f"  Expected polygon area based on bounding box: {expected_area:.4f}")
+            
+            # Try standard polygonization first
+            standard_polygons = list(polygonize(merged_lines))
+            
+            # Check if we got reasonable polygons
+            min_reasonable_area = max(1.0, expected_area * 0.1)
+            reasonable_standard_polys = [p for p in standard_polygons if p.area > min_reasonable_area]
+            
+            if reasonable_standard_polys and sum(p.area for p in reasonable_standard_polys) > expected_area * 0.3:
+                print(f"  Standard polygonization successful, created {len(reasonable_standard_polys)} polygons")
+                print(f"  Total area: {sum(p.area for p in reasonable_standard_polys):.4f}")
+                polygons = reasonable_standard_polys
+            else:
+                print(f"  Standard polygonization failed or created only tiny polygons, trying buffering")
+                # Try buffering with increasing sizes
+                buffer_sizes = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2]
+                
+                best_polygons = []
+                best_area_sum = 0
+                
+                for try_buffer in buffer_sizes:
+                    print(f"  Trying buffer size: {try_buffer}")
+                    try:
+                        buffered_lines = merged_lines.buffer(try_buffer)
+                        
+                        if not buffered_lines.is_empty:
+                            current_polygons = []
+                            current_area_sum = 0
+                            
+                            if isinstance(buffered_lines, Polygon):
+                                if buffered_lines.area > min_reasonable_area:
+                                    print(f"  Created polygon with area: {buffered_lines.area:.4f}")
+                                    current_polygons = [buffered_lines]
+                                    current_area_sum = buffered_lines.area
+                            elif isinstance(buffered_lines, MultiPolygon):
+                                # Filter out tiny polygons
+                                reasonable_polys = [p for p in buffered_lines.geoms if p.area > min_reasonable_area]
+                                if reasonable_polys:
+                                    print(f"  Created {len(reasonable_polys)} polygons with total area: {sum(p.area for p in reasonable_polys):.4f}")
+                                    current_polygons = reasonable_polys
+                                    current_area_sum = sum(p.area for p in reasonable_polys)
+                            
+                            # Keep track of the best result so far
+                            if current_area_sum > best_area_sum:
+                                best_polygons = current_polygons
+                                best_area_sum = current_area_sum
+                                print(f"  New best result with total area: {best_area_sum:.4f}")
+                                
+                            # If we've found a good result, stop trying larger buffers
+                            if current_area_sum > expected_area * 0.5:
+                                print(f"  Found good result (area: {current_area_sum:.4f} vs expected: {expected_area:.4f})")
+                                break
+                    except Exception as e:
+                        print(f"  Error with buffer size {try_buffer}: {e}")
+                
+                # Use the best result we found
+                if best_polygons:
+                    print(f"  Using best result with {len(best_polygons)} polygons, total area: {best_area_sum:.4f}")
+                    polygons = best_polygons
+                else:
+                    # If both standard and buffering failed, try convex hull as a last resort
+                    try:
+                        from shapely.geometry import MultiPoint
+                        
+                        # Extract all endpoints from the lines
+                        points = []
+                        if isinstance(merged_lines, LineString):
+                            points.extend(list(merged_lines.coords))
+                        elif isinstance(merged_lines, MultiLineString):
+                            for line in merged_lines.geoms:
+                                points.extend(list(line.coords))
+                        
+                        if points:
+                            hull = MultiPoint(points).convex_hull
+                            if isinstance(hull, Polygon) and hull.area > min_reasonable_area:
+                                print(f"  Created convex hull with area: {hull.area:.4f}")
+                                polygons = [hull]
+                                print(f"  Using convex hull as last resort")
+                            else:
+                                print(f"  Warning: Convex hull too small or invalid, falling back to standard result")
+                                polygons = standard_polygons
+                        else:
+                            print(f"  Warning: No points found for convex hull, falling back to standard result")
+                            polygons = standard_polygons
+                    except Exception as e:
+                        print(f"  Error creating convex hull: {e}")
+                        print(f"  Warning: All methods failed, falling back to standard result")
+                        polygons = standard_polygons
         else:
             # Unknown method, use standard
             print(f"  Warning: Unknown polygonization method '{polygonization_method}', using standard")
@@ -233,37 +424,58 @@ def slice_at_height(stl_mesh, z_height):
             # Find the polygon with the largest area - this is likely the outer contour
             areas = [p.area for p in valid_polygons]
             largest_idx = areas.index(max(areas))
+            largest_poly = valid_polygons[largest_idx]
+            
+            print(f"  Largest polygon has area: {largest_poly.area:.4f}")
+            
+            # If the largest polygon is too small, it might not be the actual outer contour
+            # In this case, we should try to create a better representation of the outer contour
+            if largest_poly.area < 10.0:  # Arbitrary threshold for "too small"
+                print(f"  Warning: Largest polygon may be too small, attempting to create better outer contour")
+                
+                # Try to create a convex hull of all polygons to get a better outer boundary
+                all_points = []
+                for poly in valid_polygons:
+                    all_points.extend(list(poly.exterior.coords)[:-1])  # Exclude last point (duplicate of first)
+                
+                if all_points:
+                    from shapely.geometry import MultiPoint
+                    convex_hull = MultiPoint(all_points).convex_hull
+                    
+                    if isinstance(convex_hull, Polygon) and convex_hull.area > largest_poly.area * 1.5:
+                        print(f"  Created convex hull with area: {convex_hull.area:.4f}")
+                        # Replace the largest polygon with the convex hull
+                        valid_polygons[largest_idx] = convex_hull
+                        largest_poly = convex_hull
             
             # Check if any polygons are contained within others
             final_polygons = []
+            holes = []
+            
+            # First, add the largest polygon
+            final_polygons.append(largest_poly)
+            
+            # Then check all other polygons
             for i, poly in enumerate(valid_polygons):
-                # If this is the largest polygon, keep it
                 if i == largest_idx:
-                    final_polygons.append(poly)
-                    continue
+                    continue  # Skip the largest polygon, already added
                 
                 # Check if this polygon is contained within the largest polygon
-                # If it is, it's likely a hole and should be handled differently
-                if valid_polygons[largest_idx].contains(poly):
-                    # This is a hole - we'll handle it by creating a polygon with a hole
+                if largest_poly.contains(poly):
+                    # This is a hole - collect it for later
                     print(f"  Detected a hole in the largest polygon at z={z_height:.2f}")
-                    # We don't add it separately - it will be added as a hole in the largest polygon
+                    holes.append(poly.exterior.coords)
                 else:
                     # This is a separate solid area
                     final_polygons.append(poly)
             
             # Create a new polygon with holes if needed
-            if len(final_polygons) == 1 and len(valid_polygons) > 1:
-                outer_poly = final_polygons[0]
-                holes = []
-                for poly in valid_polygons:
-                    if poly != outer_poly and outer_poly.contains(poly):
-                        holes.append(poly.exterior.coords)
-                
-                if holes:
-                    # Create a new polygon with holes
-                    new_poly = Polygon(outer_poly.exterior.coords, [hole for hole in holes])
-                    final_polygons = [new_poly]
+            if holes:
+                # Create a new polygon with holes
+                new_poly = Polygon(largest_poly.exterior.coords, holes)
+                # Replace the largest polygon with the new one that has holes
+                final_polygons[0] = new_poly
+                print(f"  Created polygon with {len(holes)} holes")
             
             valid_polygons = final_polygons
 
