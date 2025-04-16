@@ -448,34 +448,77 @@ def slice_at_height(stl_mesh, z_height):
                         valid_polygons[largest_idx] = convex_hull
                         largest_poly = convex_hull
             
-            # Check if any polygons are contained within others
+            # Improved hole detection algorithm
             final_polygons = []
-            holes = []
             
-            # First, add the largest polygon
-            final_polygons.append(largest_poly)
+            # First, identify potential holes (smaller polygons inside larger ones)
+            potential_holes = {}  # Dictionary mapping container polygons to lists of hole polygons
+            standalone_polygons = []  # Polygons that aren't contained by any other polygon
             
-            # Then check all other polygons
+            # For each polygon, check if it's contained within another polygon
             for i, poly in enumerate(valid_polygons):
-                if i == largest_idx:
-                    continue  # Skip the largest polygon, already added
+                is_contained = False
                 
-                # Check if this polygon is contained within the largest polygon
-                if largest_poly.contains(poly):
-                    # This is a hole - collect it for later
-                    print(f"  Detected a hole in the largest polygon at z={z_height:.2f}")
-                    holes.append(poly.exterior.coords)
+                # Check if this polygon is contained within any other polygon
+                for j, container in enumerate(valid_polygons):
+                    if i != j and container.contains(poly):
+                        # This polygon is contained within another polygon
+                        if j not in potential_holes:
+                            potential_holes[j] = []
+                        potential_holes[j].append(i)
+                        is_contained = True
+                        break
+                
+                if not is_contained:
+                    standalone_polygons.append(i)
+            
+            print(f"  Found {len(standalone_polygons)} standalone polygons and {len(potential_holes)} polygons with potential holes")
+            
+            # Process each standalone polygon
+            for idx in standalone_polygons:
+                poly = valid_polygons[idx]
+                
+                # Check if this polygon has any holes
+                if idx in potential_holes:
+                    # Get the holes for this polygon
+                    hole_indices = potential_holes[idx]
+                    holes = [valid_polygons[h].exterior.coords for h in hole_indices]
+                    
+                    # Create a new polygon with holes
+                    new_poly = Polygon(poly.exterior.coords, holes)
+                    print(f"  Created polygon with {len(holes)} holes")
+                    final_polygons.append(new_poly)
                 else:
-                    # This is a separate solid area
+                    # No holes, just add the polygon as is
                     final_polygons.append(poly)
             
-            # Create a new polygon with holes if needed
-            if holes:
-                # Create a new polygon with holes
-                new_poly = Polygon(largest_poly.exterior.coords, holes)
-                # Replace the largest polygon with the new one that has holes
-                final_polygons[0] = new_poly
-                print(f"  Created polygon with {len(holes)} holes")
+            # If we didn't find any valid polygons with the improved algorithm, fall back to the original method
+            if not final_polygons:
+                print("  Warning: Improved hole detection failed, falling back to original method")
+                final_polygons = [largest_poly]
+                holes = []
+                
+                # Then check all other polygons
+                for i, poly in enumerate(valid_polygons):
+                    if i == largest_idx:
+                        continue  # Skip the largest polygon, already added
+                    
+                    # Check if this polygon is contained within the largest polygon
+                    if largest_poly.contains(poly):
+                        # This is a hole - collect it for later
+                        print(f"  Detected a hole in the largest polygon at z={z_height:.2f}")
+                        holes.append(poly.exterior.coords)
+                    else:
+                        # This is a separate solid area
+                        final_polygons.append(poly)
+                
+                # Create a new polygon with holes if needed
+                if holes:
+                    # Create a new polygon with holes
+                    new_poly = Polygon(largest_poly.exterior.coords, holes)
+                    # Replace the largest polygon with the new one that has holes
+                    final_polygons[0] = new_poly
+                    print(f"  Created polygon with {len(holes)} holes")
             
             valid_polygons = final_polygons
 
@@ -509,13 +552,21 @@ def visualize_layer(layer_contours, layer_num, z_height):
     
     # Plot each contour
     for polygon in layer_contours:
+        # Plot exterior boundary in blue
         x, y = polygon.exterior.xy
-        ax.plot(x, y, 'b-')
+        ax.plot(x, y, 'b-', linewidth=2, label='Exterior' if polygon == layer_contours[0] else "")
         
-        # Plot holes if any
+        # Plot holes in red with dashed lines
         for interior in polygon.interiors:
             x, y = interior.xy
-            ax.plot(x, y, 'r-')
+            ax.plot(x, y, 'r--', linewidth=1.5, label='Interior/Hole' if interior == list(polygon.interiors)[0] else "")
+    
+    # Add legend if we have both exterior and interior
+    has_interior = any(len(list(polygon.interiors)) > 0 for polygon in layer_contours)
+    if has_interior:
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='best')
     
     ax.set_aspect('equal')
     ax.set_title(f"Layer {layer_num} (z={z_height:.2f}mm)")

@@ -14,11 +14,11 @@ DEFAULT_CONFIG = {
     'buffer_size_large': 0.01,   # Size for large buffer method
    
     'visualize_stl_mesh': False,
-    'visualize_layer_contours': False,
-    'visualize_fill_paths': False,
-    'visualize_optimized_paths': False,
+    'visualize_layer_contours': True,  # Enable layer contour visualization by default
+    'visualize_fill_paths': True,      # Enable fill path visualization
+    'visualize_optimized_paths': True, # Enable optimized path visualization
     'visualize_layer_transitions': False,
-    'visualize_problematic_segments': False,
+    'visualize_problematic_segments': True, # Enable visualization of problematic segments
     
     # GCode generator settings
     'generate_gcode': True,     # Whether to generate GCode output

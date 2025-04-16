@@ -27,6 +27,7 @@ visualize_stl_mesh: False
 #large_buffer: Uses a larger buffer for more aggressive gap closing
 #manual_close: Manually connects endpoints that are close to each other 
 
+#polygonization_method: "hybrid"
 #polygonization_method: "standard"
 polygonization_method: "small_buffer"
 #polygonization_method: "large_buffer"
@@ -34,7 +35,7 @@ polygonization_method: "small_buffer"
 
 
 # outer contour polygon for a layer slice 
-visualize_layer_contours: False
+visualize_layer_contours: True
 # debug polygonization failures
 visualize_problematic_segments: False
 
@@ -43,7 +44,7 @@ visualize_problematic_segments: False
 ### Region fill
 
 # The region fill path before optimization
-visualize_fill_paths: True
+visualize_fill_paths: False
 
 
 ### Toolpath optimizer

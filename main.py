@@ -12,6 +12,19 @@ from src.config import get_config
 
 def main():
     print("Welcome to claypaths - continuous deposition slicer")
+
+    # stress test models
+    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+
+    # should work
+    stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+
+    # might have issues - check if they are closed
+    #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    #stl_file_path = os.path.join("models", "hollow-cuboid.stl")
+    #stl_file_path = os.path.join("models", "test", "ring.stl")
     
     # Paths to test STL files
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
@@ -22,15 +35,12 @@ def main():
     #stl_file_path = os.path.join("models", "test", "5cm-cube-with-80-diameter-hole.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
-    #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
     #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
-    #stl_file_path = os.path.join("models", "test", "ring.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
     
     # testing (mine, freecad)
     #stl_file_path = os.path.join("models", "mine", "hex.stl")
-    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     
     #confirmed working, simple models
@@ -44,7 +54,7 @@ def main():
 
     # complex shapes, problematic
     # holes are detected as solid rather than the cuboid
-    stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
 
     # cuboid detected as solid rather than cylinder
     #stl_file_path = os.path.join("models", "cylinder-minus-cuboid.stl")
@@ -53,7 +63,7 @@ def main():
     #stl_file_path = os.path.join("models", "hollow-cuboid.stl")
 
     # empty hex is detected as solid
-    #stl_file_path = os.path.join("models", "wrench.stl")
+    #stl_file_path = os.path.join("models", "wrench.stl") #not closed, has an issue
     
     # complex shapes, problematic
     #stl_file_path = os.path.join("models", "u-shape.stl")
@@ -116,6 +126,11 @@ def main():
                 # Generate fill paths for each polygon in the layer
                 layer_paths = []
                 for j, polygon in enumerate(layer):
+                    # Check if this polygon has holes
+                    has_holes = len(list(polygon.interiors)) > 0
+                    if has_holes:
+                        print(f"  Processing polygon {j+1} with {len(list(polygon.interiors))} holes")
+                    
                     # Generate the fill path for this polygon
                     fill_path = generate_continuous_fill(polygon, toolpath_width)
                     
@@ -123,6 +138,8 @@ def main():
                         # Visualize the fill path for this polygon
                         visualize_fill_path(polygon, fill_path, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path")
                         layer_paths.append(fill_path)
+                    else:
+                        print(f"  Warning: No valid fill path generated for polygon {j+1}")
                 
                 all_layer_paths.append(layer_paths)
             
