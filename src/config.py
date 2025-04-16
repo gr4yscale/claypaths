@@ -7,6 +7,11 @@ DEFAULT_CONFIG = {
     'layer_height': 1.0,    # Default layer height in mm
     'max_layers_to_process': 6,  # Maximum number of layers to process
     'optimization_method': 'greedy',  # Preferred optimization method
+    
+    # Polygonization method options: 'standard', 'small_buffer', 'large_buffer', 'manual_close'
+    'polygonization_method': 'standard',
+    'buffer_size_small': 0.001,  # Size for small buffer method
+    'buffer_size_large': 0.01,   # Size for large buffer method
    
     'visualize_stl_mesh': False,
     'visualize_layer_contours': False,

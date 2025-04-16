@@ -124,18 +124,89 @@ def slice_at_height(stl_mesh, z_height):
         # Debug information
         print(f"  Found {len(segments)} segments at z={z_height:.2f}")
         
-        # Try to form polygons
-        polygons = list(polygonize(merged_lines))
-
+        # Get configuration for polygonization method
+        config = get_config()
+        polygonization_method = config.get('polygonization_method', 'standard')
+        
+        # Initialize polygons list
+        polygons = []
+        
+        # Apply the selected polygonization method
+        if polygonization_method == 'standard':
+            # Standard polygonize method
+            print(f"  Using standard polygonization method at z={z_height:.2f}")
+            polygons = list(polygonize(merged_lines))
+            
+        elif polygonization_method == 'small_buffer':
+            # Small buffer method
+            buffer_size = config.get('buffer_size_small', 0.001)
+            print(f"  Using small buffer polygonization method (size={buffer_size}) at z={z_height:.2f}")
+            buffered_lines = merged_lines.buffer(buffer_size)
+            if not buffered_lines.is_empty:
+                if isinstance(buffered_lines, Polygon):
+                    polygons = [buffered_lines]
+                elif isinstance(buffered_lines, MultiPolygon):
+                    polygons = list(buffered_lines.geoms)
+                    
+        elif polygonization_method == 'large_buffer':
+            # Large buffer method
+            buffer_size = config.get('buffer_size_large', 0.01)
+            print(f"  Using large buffer polygonization method (size={buffer_size}) at z={z_height:.2f}")
+            buffered_lines = merged_lines.buffer(buffer_size)
+            if not buffered_lines.is_empty:
+                if isinstance(buffered_lines, Polygon):
+                    polygons = [buffered_lines]
+                elif isinstance(buffered_lines, MultiPolygon):
+                    polygons = list(buffered_lines.geoms)
+                    
+        elif polygonization_method == 'manual_close':
+            # Manual close method - only works with MultiLineString
+            print(f"  Using manual close polygonization method at z={z_height:.2f}")
+            if isinstance(merged_lines, MultiLineString):
+                # Extract all endpoints
+                endpoints = []
+                for line in merged_lines.geoms:
+                    coords = list(line.coords)
+                    if len(coords) >= 2:
+                        endpoints.append(coords[0])
+                        endpoints.append(coords[-1])
+                
+                # Find endpoints that are very close to each other
+                tolerance = config.get('buffer_size_small', 0.001)
+                connected_lines = list(merged_lines.geoms)
+                
+                # Try to connect very close endpoints
+                for i in range(0, len(endpoints), 2):
+                    if i+1 >= len(endpoints):
+                        break
+                    p1 = endpoints[i]
+                    for j in range(i+1, len(endpoints), 2):
+                        if j+1 >= len(endpoints):
+                            break
+                        p2 = endpoints[j]
+                        # Calculate distance
+                        dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
+                        if dist < tolerance:
+                            # Connect these points with a new line segment
+                            connected_lines.append(LineString([p1, p2]))
+                
+                # Try polygonize with the connected lines
+                connected_merged = unary_union(connected_lines)
+                polygons = list(polygonize(connected_merged))
+            else:
+                print(f"  Warning: Manual close method requires MultiLineString but got {type(merged_lines)}")
+                # Fall back to standard method
+                polygons = list(polygonize(merged_lines))
+        else:
+            # Unknown method, use standard
+            print(f"  Warning: Unknown polygonization method '{polygonization_method}', using standard")
+            polygons = list(polygonize(merged_lines))
+        
+        # If the selected method failed, log the issue
         if not polygons:
-            # If polygonize failed initially, it might be due to disconnected segments.
-            # The previous buffer(0.001) fallback often merged holes.
-            # Let's log this and return the empty list.
-            # A more advanced approach could involve snapping vertices or more careful buffering.
-            print(f"  Warning: polygonize did not create polygons from segments at z={z_height:.2f}. Segments might not form closed loops.")
+            print(f"  Warning: Polygonization method '{polygonization_method}' failed at z={z_height:.2f}")
             
             # Check if visualization of problematic segments is enabled
-            config = get_config()
             if config.get('visualize_problematic_segments', False):
                 # Visualize the problematic segments
                 if isinstance(merged_lines, (LineString, MultiLineString)):
