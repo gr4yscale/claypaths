@@ -60,17 +60,16 @@ def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
             print(f"ERROR: Exception while fixing polygon: {e}")
             return []
     
-    # Check if the polygon is a hole (has interiors)
-    # if len(list(polygon.interiors)) > 0:
-    #     # This is a polygon with holes - process it normally
-    #     contour_path = generate_contour_fill(polygon, toolpath_width)
-    #     return contour_path
+    # Check if the polygon has holes
+    if len(list(polygon.interiors)) > 0:
+        print(f"  Polygon has {len(list(polygon.interiors))} holes")
+        # We'll handle holes in the generate_contour_fill function
     
     # Check if this polygon might be a hole itself
     # A hole typically has a counterclockwise orientation
-    # if not polygon.exterior.is_ccw:
-    #     print("Skipping fill for hole polygon (counterclockwise exterior)")
-    #     return []
+    if not polygon.exterior.is_ccw:
+        print("  Warning: Polygon has counterclockwise exterior, which typically indicates a hole")
+        # We'll still process it, but with a warning
     
     # Generate contour-based fill without optimizing for previous end point
     # The toolpath optimizer will handle the optimization across layers
@@ -107,6 +106,11 @@ def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     
     print(f"  Using polygonization method: {polygonization_method}")
     
+    # Check if the polygon has holes (interiors)
+    has_holes = len(list(polygon.interiors)) > 0
+    if has_holes:
+        print(f"  Polygon has {len(list(polygon.interiors))} holes")
+    
     # Start with the original polygon boundary
     current_polygon = polygon
     contours = []
@@ -140,7 +144,36 @@ def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
         print(f"  Contour {contour_count}: Area={current_polygon.area:.4f}, Buffer={buffer_distance:.4f}")
         
         try:
-            next_polygon = current_polygon.buffer(buffer_distance, join_style=2)
+            # Create a new polygon with the same holes but a buffered exterior
+            next_polygon = None
+            
+            # Buffer the exterior only
+            buffered_exterior = current_polygon.exterior.buffer(buffer_distance, join_style=2)
+            
+            # If the buffered exterior is valid and not empty
+            if buffered_exterior and not buffered_exterior.is_empty:
+                if isinstance(buffered_exterior, Polygon):
+                    # Create a new polygon with the buffered exterior and the original holes
+                    # Note: As we buffer inward, some holes might need to be excluded if they're
+                    # now outside the buffered exterior
+                    valid_holes = []
+                    for interior in current_polygon.interiors:
+                        if buffered_exterior.contains(Polygon(interior)):
+                            valid_holes.append(interior.coords)
+                    
+                    if valid_holes:
+                        print(f"  Preserving {len(valid_holes)} holes in the buffered polygon")
+                        next_polygon = Polygon(buffered_exterior.exterior, valid_holes)
+                    else:
+                        next_polygon = buffered_exterior
+                else:
+                    # If the buffer operation didn't result in a polygon, try a regular buffer
+                    print(f"  Buffered exterior is not a polygon, falling back to regular buffer")
+                    next_polygon = current_polygon.buffer(buffer_distance, join_style=2)
+            else:
+                # If the buffered exterior is empty, try a regular buffer
+                print(f"  Buffered exterior is empty, falling back to regular buffer")
+                next_polygon = current_polygon.buffer(buffer_distance, join_style=2)
             
             # Check if the buffer operation resulted in a valid polygon
             if next_polygon.is_empty:
@@ -206,6 +239,11 @@ def connect_contours(contours, toolpath_width, prev_end_point=None):
     for x, y in outer_contour_coords:
         path.append((x, y))
     
+    # If there's only one contour, we're done
+    if len(contours) == 1:
+        print("  Only one contour, no connections needed")
+        return path
+        
     # Connect to inner contours
     for i in range(1, len(contours)):
         # Find the closest point on the next contour to the current position
@@ -308,7 +346,9 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
     # Plot holes if any
     for interior in polygon.interiors:
         x, y = interior.xy
-        ax.plot(x, y, 'b-', linewidth=2)
+        ax.plot(x, y, 'r-', linewidth=2, label='Hole Boundary' if 'Hole Boundary' not in ax.get_legend_handles_labels()[1] else "")
+        # Fill the hole with a light color to make it more visible
+        ax.fill(x, y, 'r', alpha=0.2)
     
     # Plot the fill path
     if path:
