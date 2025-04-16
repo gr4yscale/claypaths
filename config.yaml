@@ -20,19 +20,6 @@ visualize_stl_mesh: False
 
 ### Slicer
 
-# method for creating polygons from the line segments where triangles intersect slicing plane
-
-#standard: The original polygonize method
-#small_buffer: Uses a small buffer to close gaps
-#large_buffer: Uses a larger buffer for more aggressive gap closing
-#manual_close: Manually connects endpoints that are close to each other 
-
-#polygonization_method: "standard"
-polygonization_method: "small_buffer"
-#polygonization_method: "large_buffer"
-#polygonization_method: "manual_close"
-
-
 # outer contour polygon for a layer slice 
 visualize_layer_contours: False
 # debug polygonization failures

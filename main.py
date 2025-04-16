@@ -83,10 +83,13 @@ def main():
         config = get_config()
         layer_height = config['layer_height']
         layers = slice_mesh(stl_mesh, layer_height)
-        
-        # Optionally visualize the original layers again if needed
-        visualize_layers(layers, mesh_info['min_coords'][2], layer_height)
-        
+
+        # Visualize the sliced layers (contours)
+        if layers:
+             visualize_layers(layers, mesh_info['min_coords'][2], layer_height)
+        else:
+             print("No layers were generated, skipping visualization.")
+
         # Step 3: Generate and optimize region fill for each layer
         print("\nStep 3: Generating and optimizing region fill for layers")
         config = get_config()

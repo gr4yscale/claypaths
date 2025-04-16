@@ -8,11 +8,6 @@ DEFAULT_CONFIG = {
     'max_layers_to_process': 6,  # Maximum number of layers to process
     'optimization_method': 'greedy',  # Preferred optimization method
     
-    # Polygonization method options: 'standard', 'small_buffer', 'large_buffer', 'manual_close', 'hybrid'
-    'polygonization_method': 'hybrid',
-    'buffer_size_small': 0.001,  # Size for small buffer method
-    'buffer_size_large': 0.01,   # Size for large buffer method
-   
     'visualize_stl_mesh': False,
     'visualize_layer_contours': False,
     'visualize_fill_paths': False,
