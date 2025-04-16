@@ -7,6 +7,7 @@ from shapely.affinity import scale, translate
 def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     """
     Generate a continuous fill pattern for a polygon using smooth contour-based paths.
+    Only generates fill for polygons that are not holes.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
@@ -19,6 +20,18 @@ def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     """
     if not isinstance(polygon, Polygon) or polygon.is_empty:
         print("Invalid polygon for region fill")
+        return []
+    
+    # Check if the polygon is a hole (has interiors)
+    if len(list(polygon.interiors)) > 0:
+        # This is a polygon with holes - process it normally
+        contour_path = generate_contour_fill(polygon, toolpath_width)
+        return contour_path
+    
+    # Check if this polygon might be a hole itself
+    # A hole typically has a counterclockwise orientation
+    if not polygon.exterior.is_ccw:
+        print("Skipping fill for hole polygon (counterclockwise exterior)")
         return []
     
     # Generate contour-based fill without optimizing for previous end point
