@@ -9,16 +9,33 @@ from src.gcode_generator import GCodeGenerator
 from src.config import get_config
 
 
+
 def main():
-    print("Welcome to claypaths - Fermat Spiral 3D Printing Toolpath Generator")
+    print("Welcome to claypaths - continuous deposition slicer")
     
     # Paths to test STL files
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
 
-    #confirmed working
-    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-    stl_file_path = os.path.join("models", "t-shape.stl")
+    # testing (stlparts)
+    #stl_file_path = os.path.join("models", "test", "hollow-cuboid.stl") #kinda works
+    #stl_file_path = os.path.join("models", "test", "5cm-cube-with-80-diameter-hole.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
+    #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
+    #stl_file_path = os.path.join("models", "test", "ring.stl")
+    #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
+    #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
+    
+    # testing (mine, freecad)
+    #stl_file_path = os.path.join("models", "mine", "hex.stl")
+    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+    
+    #confirmed working, simple models
+    stl_file_path = os.path.join("models", "extruded-polygon.stl")
+    #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "cuboid.stl")
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "right-triangular-prism.stl")

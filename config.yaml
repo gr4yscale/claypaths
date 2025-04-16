@@ -1,6 +1,6 @@
 
 ### Testing
-max_layers_to_process: 7                # For quicker test cycles
+max_layers_to_process: 4                # For quicker test cycles
 
 ### Print settings (shared)
 
@@ -24,9 +24,13 @@ visualize_stl_mesh: False
 
 #standard: The original polygonize method
 #small_buffer: Uses a small buffer to close gaps
-#large_buffer: Uses a larger buffer for more aggressive gap closing                     manual_close: Manually connects endpoints that are close to each other 
+#large_buffer: Uses a larger buffer for more aggressive gap closing
+#manual_close: Manually connects endpoints that are close to each other 
 
-polygonization_method: "small_buffer"
+polygonization_method: "standard"
+#polygonization_method: "small_buffer"
+#polygonization_method: "large_buffer"
+#polygonization_method: "manual_close"
 
 
 # outer contour polygon for a layer slice 
