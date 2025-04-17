@@ -58,20 +58,45 @@ def find_connecting_segment(outer_contour, inner_contour, toolpath_width):
     # Combine points from both contours
     points = np.array(outer_contour + inner_contour)
     
-    # Compute Voronoi diagram
-    vor = Voronoi(points)
+    # Need at least 4 points to compute Voronoi diagram
+    if len(points) < 4:
+        # Fallback to simple connection between closest points
+        outer_point = np.array(outer_contour[0])
+        inner_point = np.array(inner_contour[0])
+        min_dist = np.linalg.norm(outer_point - inner_point)
+        
+        # Find closest pair of points
+        for op in outer_contour:
+            for ip in inner_contour:
+                dist = np.linalg.norm(np.array(op) - np.array(ip))
+                if dist < min_dist:
+                    min_dist = dist
+                    outer_point = np.array(op)
+                    inner_point = np.array(ip)
+        
+        # Return simple connection if within toolpath width
+        if min_dist < toolpath_width * 1.5:
+            return [tuple(outer_point), tuple(inner_point)]
+        return []
     
-    # Find ridge points between outer and inner contours
-    connecting_segment = []
-    for ridge in vor.ridge_points:
-        if (ridge[0] < len(outer_contour) and ridge[1] >= len(outer_contour)) or \
-           (ridge[1] < len(outer_contour) and ridge[0] >= len(outer_contour)):
-            p1 = points[ridge[0]]
-            p2 = points[ridge[1]]
-            if np.linalg.norm(p1 - p2) < toolpath_width * 1.5:
-                connecting_segment.extend([p1, p2])
-    
-    return connecting_segment
+    try:
+        # Compute Voronoi diagram
+        vor = Voronoi(points)
+        
+        # Find ridge points between outer and inner contours
+        connecting_segment = []
+        for ridge in vor.ridge_points:
+            if (ridge[0] < len(outer_contour) and ridge[1] >= len(outer_contour)) or \
+               (ridge[1] < len(outer_contour) and ridge[0] >= len(outer_contour)):
+                p1 = points[ridge[0]]
+                p2 = points[ridge[1]]
+                if np.linalg.norm(p1 - p2) < toolpath_width * 1.5:
+                    connecting_segment.extend([p1, p2])
+        
+        return connecting_segment
+    except Exception as e:
+        print(f"Warning: Voronoi computation failed: {e}")
+        return []
 
 def build_connectivity_graph(contours, toolpath_width):
     """
@@ -170,6 +195,7 @@ def generate_simple_spiral(spiral_tree, toolpath_width):
 def perform_recursive_rerouting(spiral_tree, spirallable_regions, branch_points, toolpath_width):
     """
     Perform recursive rerouting to generate the continuous spiral path.
+    Implements the inward/outward links and branch point merging logic.
     
     Args:
         spiral_tree (networkx.Graph): Spiral-contour tree
@@ -180,13 +206,100 @@ def perform_recursive_rerouting(spiral_tree, spirallable_regions, branch_points,
     Returns:
         list: List of points representing the continuous toolpath
     """
-    # TODO: Implement the recursive rerouting logic
-    # This is the most complex part of the algorithm and requires
-    # careful implementation of the inward/outward links and
-    # branch point merging logic described in the paper
+    def process_branch(node, parent=None):
+        """
+        Recursively process a branch of the spiral tree.
+        
+        Args:
+            node: Current node being processed
+            parent: Parent node (None for root)
+            
+        Returns:
+            tuple: (inward_path, outward_path, entry_point, exit_point)
+        """
+        # Get the contour for this node
+        contour_coords = spiral_tree.nodes[node]['exterior']
+        
+        # Initialize paths
+        inward_path = []
+        outward_path = []
+        
+        # Process children first (bottom-up traversal)
+        children = [n for n in spiral_tree.neighbors(node) if n != parent]
+        child_paths = [process_branch(child, node) for child in children]
+        
+        if not children:
+            # Leaf node - simple spiral
+            inward_path = list(contour_coords)
+            outward_path = []
+            entry_point = contour_coords[0]
+            exit_point = contour_coords[-1]
+        else:
+            # Branch node - merge child paths
+            # Sort child paths by their entry points' distance to parent exit
+            if parent is not None:
+                parent_exit = spiral_tree.edges[parent, node]['segment'][-1]
+                child_paths.sort(key=lambda x: np.linalg.norm(np.array(x[2]) - np.array(parent_exit)))
+            
+            # Merge child paths
+            for i, (child_in, child_out, child_entry, child_exit) in enumerate(child_paths):
+                if i == 0:
+                    # First child - connect directly
+                    inward_path.extend(child_in)
+                    outward_path.extend(child_out[::-1])
+                else:
+                    # Subsequent children - add connecting segment
+                    connecting_segment = find_connecting_segment(
+                        [outward_path[-1]], 
+                        [child_entry], 
+                        toolpath_width
+                    )
+                    outward_path.extend(connecting_segment)
+                    inward_path.extend(child_in)
+                    outward_path.extend(child_out[::-1])
+            
+            # Add current contour
+            entry_point = inward_path[0]
+            exit_point = outward_path[-1] if outward_path else inward_path[-1]
+            
+            # Create inward/outward links
+            inward_link = find_connecting_segment(
+                [entry_point], 
+                [contour_coords[0]], 
+                toolpath_width
+            )
+            outward_link = find_connecting_segment(
+                [exit_point], 
+                [contour_coords[-1]], 
+                toolpath_width
+            )
+            
+            inward_path = inward_link + list(contour_coords) + inward_path
+            outward_path = outward_path + outward_link
+        
+        return inward_path, outward_path, entry_point, exit_point
     
-    # For now, return a simple spiral path as a placeholder
-    return generate_simple_spiral(spiral_tree, toolpath_width)
+    # Start processing from the root node (outermost contour)
+    root_node = 0
+    inward, outward, _, _ = process_branch(root_node)
+    
+    # Combine inward and outward paths
+    full_path = inward + outward[::-1]
+    
+    # Smooth the path at connection points
+    smoothed_path = []
+    for i in range(len(full_path)):
+        if i == 0 or i == len(full_path) - 1:
+            smoothed_path.append(full_path[i])
+        else:
+            # Average with neighboring points for smoothing
+            prev = np.array(full_path[i-1])
+            curr = np.array(full_path[i])
+            next = np.array(full_path[i+1])
+            smoothed = (prev + curr + next) / 3
+            smoothed_path.append(tuple(smoothed))
+    
+    return smoothed_path
 
 def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     """
