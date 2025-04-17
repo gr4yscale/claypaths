@@ -1,242 +1,88 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import networkx as nx
-from shapely.geometry import Polygon, MultiPolygon, LineString, Point
-from shapely.ops import nearest_points, unary_union
-from scipy.spatial import Voronoi
-from src.config import get_config
-
-def generate_iso_contours(polygon, toolpath_width):
-    """
-    Generate iso-contours by successive inward offsets.
-    
-    Args:
-        polygon (shapely.geometry.Polygon): The polygon to offset
-        toolpath_width (float): Distance between contours
-        
-    Returns:
-        list: List of contours, each as a tuple (exterior, interiors)
-    """
-    contours = []
-    current_polygon = polygon
-    min_area = toolpath_width * toolpath_width * 4  # Minimum area threshold
-    
-    while current_polygon.area > min_area:
-        # Get exterior and interiors
-        exterior = list(current_polygon.exterior.coords)
-        interiors = [list(interior.coords) for interior in current_polygon.interiors]
-        contours.append((exterior, interiors))
-        
-        # Generate next inward offset
-        next_polygon = current_polygon.buffer(-toolpath_width, join_style=2)
-        
-        # Handle MultiPolygon results
-        if isinstance(next_polygon, MultiPolygon):
-            # Take the largest polygon
-            largest = max(next_polygon.geoms, key=lambda p: p.area)
-            next_polygon = largest
-        
-        if next_polygon.is_empty or not isinstance(next_polygon, Polygon):
-            break
-            
-        current_polygon = next_polygon
-    
-    return contours
-
-def find_connecting_segment(outer_contour, inner_contour, toolpath_width):
-    """
-    Find the connecting segment between two contours using Voronoi diagrams.
-    
-    Args:
-        outer_contour (list): Outer contour coordinates
-        inner_contour (list): Inner contour coordinates
-        toolpath_width (float): Toolpath width for proximity threshold
-        
-    Returns:
-        list: List of points forming the connecting segment
-    """
-    # Combine points from both contours
-    points = np.array(outer_contour + inner_contour)
-    
-    # Compute Voronoi diagram
-    vor = Voronoi(points)
-    
-    # Find ridge points between outer and inner contours
-    connecting_segment = []
-    for ridge in vor.ridge_points:
-        if (ridge[0] < len(outer_contour) and ridge[1] >= len(outer_contour)) or \
-           (ridge[1] < len(outer_contour) and ridge[0] >= len(outer_contour)):
-            p1 = points[ridge[0]]
-            p2 = points[ridge[1]]
-            if np.linalg.norm(p1 - p2) < toolpath_width * 1.5:
-                connecting_segment.extend([p1, p2])
-    
-    return connecting_segment
-
-def build_connectivity_graph(contours, toolpath_width):
-    """
-    Build a connectivity graph between contours.
-    
-    Args:
-        contours (list): List of contours from generate_iso_contours()
-        toolpath_width (float): Toolpath width for proximity calculations
-        
-    Returns:
-        networkx.Graph: Connectivity graph between contours
-    """
-    G = nx.Graph()
-    
-    # Add nodes for each contour
-    for i, (exterior, interiors) in enumerate(contours):
-        G.add_node(i, exterior=exterior, interiors=interiors)
-    
-    # Add edges between adjacent contours
-    for i in range(len(contours) - 1):
-        outer_contour = contours[i][0]
-        inner_contour = contours[i+1][0]
-        
-        # Find connecting segments using Voronoi diagram
-        connecting_segment = find_connecting_segment(outer_contour, inner_contour, toolpath_width)
-        
-        if connecting_segment:
-            # Add edge with weight equal to segment length
-            length = LineString(connecting_segment).length
-            G.add_edge(i, i+1, weight=length, segment=connecting_segment)
-    
-    return G
-
-def construct_spiral_contour_tree(connectivity_graph):
-    """
-    Construct the spiral-contour tree using Minimum Spanning Tree (MST).
-    
-    Args:
-        connectivity_graph (networkx.Graph): Connectivity graph from build_connectivity_graph()
-        
-    Returns:
-        networkx.Graph: Spiral-contour tree
-    """
-    # Compute MST starting from the outermost contour (node 0)
-    return nx.minimum_spanning_tree(connectivity_graph)
-
-def identify_spirallable_regions(spiral_tree):
-    """
-    Identify spirallable regions and branch points in the spiral-contour tree.
-    
-    Args:
-        spiral_tree (networkx.Graph): Spiral-contour tree
-        
-    Returns:
-        tuple: (spirallable_regions, branch_points)
-    """
-    spirallable_regions = []
-    branch_points = []
-    
-    # Traverse the tree to find paths and branch points
-    for node in spiral_tree.nodes:
-        if spiral_tree.degree(node) <= 2:
-            spirallable_regions.append(node)
-        else:
-            branch_points.append(node)
-    
-    return spirallable_regions, branch_points
-
-def generate_simple_spiral(spiral_tree, toolpath_width):
-    """
-    Generate a simple spiral path as a placeholder for the full algorithm.
-    
-    Args:
-        spiral_tree (networkx.Graph): Spiral-contour tree
-        toolpath_width (float): Toolpath width
-        
-    Returns:
-        list: List of points representing a simple spiral path
-    """
-    path = []
-    
-    # Traverse the tree in depth-first order
-    for node in nx.dfs_preorder_nodes(spiral_tree, source=0):
-        exterior = spiral_tree.nodes[node]['exterior']
-        path.extend(exterior)
-        
-        # Add connection to next contour
-        if node < len(spiral_tree) - 1:
-            next_node = node + 1
-            if spiral_tree.has_edge(node, next_node):
-                segment = spiral_tree.edges[node, next_node]['segment']
-                path.extend(segment)
-    
-    return path
-
-def perform_recursive_rerouting(spiral_tree, spirallable_regions, branch_points, toolpath_width):
-    """
-    Perform recursive rerouting to generate the continuous spiral path.
-    
-    Args:
-        spiral_tree (networkx.Graph): Spiral-contour tree
-        spirallable_regions (list): List of spirallable region nodes
-        branch_points (list): List of branch point nodes
-        toolpath_width (float): Toolpath width
-        
-    Returns:
-        list: List of points representing the continuous toolpath
-    """
-    # TODO: Implement the recursive rerouting logic
-    # This is the most complex part of the algorithm and requires
-    # careful implementation of the inward/outward links and
-    # branch point merging logic described in the paper
-    
-    # For now, return a simple spiral path as a placeholder
-    return generate_simple_spiral(spiral_tree, toolpath_width)
+from shapely.geometry import Polygon, LineString, Point, LinearRing
+from shapely.ops import unary_union
+from shapely.affinity import scale, translate
 
 def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     """
-    Generate a continuous fill pattern using the Continuous Fermat Spiral (CFS) algorithm.
+    Generate a continuous fill pattern for a polygon using smooth contour-based paths.
+    Only generates fill for polygons that are not holes.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
         toolpath_width (float): Width of the toolpath
-        prev_end_point (tuple): The end point of the previous layer's path (x, y)
+        prev_end_point (tuple): The end point of the previous layer's path (x, y) - not used here
+                               as the optimizer will handle path ordering
         
     Returns:
         list: List of points representing the continuous toolpath
     """
-    # Validate input polygon
+    # Get polygon properties for logging
+    area = 0
+    perimeter = 0
+    num_interiors = 0
+    is_valid = False
+    is_ccw = False
+    
+    try:
+        if isinstance(polygon, Polygon):
+            area = polygon.area
+            perimeter = polygon.length
+            num_interiors = len(list(polygon.interiors))
+            is_valid = polygon.is_valid
+            is_ccw = polygon.exterior.is_ccw
+    except Exception as e:
+        print(f"Error getting polygon properties: {e}")
+    
+    print(f"\nGenerating fill for polygon:")
+    print(f"  Area: {area:.2f} sq units")
+    print(f"  Perimeter: {perimeter:.2f} units")
+    print(f"  Number of holes: {num_interiors}")
+    print(f"  Is valid: {is_valid}")
+    print(f"  Exterior orientation: {'CCW' if is_ccw else 'CW'}")
+    print(f"  Toolpath width: {toolpath_width:.3f}")
+    
     if not isinstance(polygon, Polygon) or polygon.is_empty:
         print("ERROR: Invalid polygon for region fill (not a polygon or empty)")
         return []
     
     if not polygon.is_valid:
         print("WARNING: Polygon is not valid, attempting to fix...")
-        polygon = polygon.buffer(0)
-        if not polygon.is_valid:
-            print("ERROR: Failed to fix invalid polygon")
+        try:
+            # Try to fix the polygon
+            polygon = polygon.buffer(0)
+            if not polygon.is_valid:
+                print("ERROR: Failed to fix invalid polygon")
+                return []
+            print("  Successfully fixed polygon")
+        except Exception as e:
+            print(f"ERROR: Exception while fixing polygon: {e}")
             return []
     
-    # Step 1: Generate iso-contours
-    iso_contours = generate_iso_contours(polygon, toolpath_width)
-    if not iso_contours:
-        print("ERROR: Failed to generate iso-contours")
-        return []
+    # Check if the polygon is a hole (has interiors)
+    # if len(list(polygon.interiors)) > 0:
+    #     # This is a polygon with holes - process it normally
+    #     contour_path = generate_contour_fill(polygon, toolpath_width)
+    #     return contour_path
     
-    # Step 2: Build connectivity graph
-    connectivity_graph = build_connectivity_graph(iso_contours, toolpath_width)
-    if not connectivity_graph:
-        print("ERROR: Failed to build connectivity graph")
-        return []
+    # Check if this polygon might be a hole itself
+    # A hole typically has a counterclockwise orientation
+    # if not polygon.exterior.is_ccw:
+    #     print("Skipping fill for hole polygon (counterclockwise exterior)")
+    #     return []
     
-    # Step 3: Construct spiral-contour tree
-    spiral_tree = construct_spiral_contour_tree(connectivity_graph)
-    if not spiral_tree:
-        print("ERROR: Failed to construct spiral-contour tree")
-        return []
+    # Generate contour-based fill without optimizing for previous end point
+    # The toolpath optimizer will handle the optimization across layers
+    print("Generating contour-based fill pattern...")
+    contour_path = generate_contour_fill(polygon, toolpath_width)
     
-    # Step 4: Identify spirallable regions and branch points
-    spirallable_regions, branch_points = identify_spirallable_regions(spiral_tree)
+    if contour_path:
+        print(f"Successfully generated fill path with {len(contour_path)} points")
+    else:
+        print("WARNING: Failed to generate fill path (empty result)")
     
-    # Step 5: Perform recursive rerouting
-    toolpath = perform_recursive_rerouting(spiral_tree, spirallable_regions, branch_points, toolpath_width)
-    
-    return toolpath
+    return contour_path
 
 def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     """
