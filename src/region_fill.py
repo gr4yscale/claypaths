@@ -75,64 +75,18 @@ def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     # Generate contour-based fill without optimizing for previous end point
     # The toolpath optimizer will handle the optimization across layers
     print("Generating contour-based fill pattern...")
-    contour_path, zigzag_paths = generate_contour_fill(polygon, toolpath_width)
+    contour_path = generate_contour_fill(polygon, toolpath_width)
     
     if contour_path:
-        print(f"Successfully generated contour path with {len(contour_path)} points")
+        print(f"Successfully generated fill path with {len(contour_path)} points")
     else:
-        print("WARNING: Failed to generate contour path (empty result)")
+        print("WARNING: Failed to generate fill path (empty result)")
     
-    if zigzag_paths:
-        total_zigzag_points = sum(len(z) for z in zigzag_paths)
-        print(f"Generated {len(zigzag_paths)} zig-zag fills with {total_zigzag_points} total points")
-    else:
-        print("No zig-zag fills generated")
-    
-    # Combine paths, only including non-empty zig-zag paths
-    combined_path = contour_path.copy()
-    for zigzag in zigzag_paths:
-        if zigzag:  # Only add non-empty zig-zag paths
-            combined_path.extend(zigzag)
-    return combined_path
-
-def generate_zigzag_fill(polygon, toolpath_width):
-    """
-    Generate zig-zag fill pattern for a polygon.
-    
-    Args:
-        polygon (shapely.geometry.Polygon): The polygon to fill
-        toolpath_width (float): Width of the toolpath
-        
-    Returns:
-        list: List of points representing the zig-zag path
-    """
-    if not polygon.is_valid:
-        return []
-    
-    # Get polygon bounds
-    min_x, min_y, max_x, max_y = polygon.bounds
-    
-    # Calculate number of passes needed
-    spacing = toolpath_width
-    num_passes = int((max_x - min_x) / spacing)
-    
-    # Generate zig-zag lines
-    zigzag_path = []
-    for i in range(num_passes + 1):
-        x = min_x + i * spacing
-        # Alternate direction for each pass
-        if i % 2 == 0:
-            zigzag_path.append((x, min_y))
-            zigzag_path.append((x, max_y))
-        else:
-            zigzag_path.append((x, max_y))
-            zigzag_path.append((x, min_y))
-    
-    return zigzag_path
+    return contour_path
 
 def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     """
-    Generate a continuous fill pattern using inward contours and zig-zag fills for underfill regions.
+    Generate a continuous fill pattern using inward contours.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
@@ -140,9 +94,7 @@ def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
         prev_end_point (tuple, optional): The end point of the previous layer's path (x, y)
         
     Returns:
-        tuple: (contour_path, zigzag_paths) where:
-            contour_path: List of points representing the continuous contour path
-            zigzag_paths: List of lists of points representing zig-zag fill paths
+        list: List of points representing the continuous toolpath
     """
     if not polygon.is_valid:
         print("Invalid polygon for contour fill")
@@ -222,30 +174,10 @@ def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
             break
     
     # Connect the contours to form a continuous spiral path
-    contour_path = connect_contours(contours, toolpath_width)
+    # We don't optimize for previous end point here as the toolpath optimizer will handle that
+    path = connect_contours(contours, toolpath_width)
     
-    # Create a union of all buffered contours
-    buffered_contours = unary_union([contour.buffer(toolpath_width/2) for contour in contours])
-    
-    # Calculate underfill regions as the difference between the original polygon and buffered contours
-    underfill_regions = polygon.difference(buffered_contours)
-    
-    # Generate zig-zag fills for each underfill region
-    zigzag_paths = []
-    if underfill_regions.is_empty:
-        print("  No underfill regions found")
-    else:
-        if underfill_regions.geom_type == 'Polygon':
-            if underfill_regions.area > (toolpath_width * toolpath_width):  # Only fill if area is significant
-                print(f"  Found underfill region with area {underfill_regions.area:.4f}")
-                zigzag_paths.append(generate_zigzag_fill(underfill_regions, toolpath_width))
-        elif underfill_regions.geom_type == 'MultiPolygon':
-            for region in underfill_regions.geoms:
-                if region.area > (toolpath_width * toolpath_width):  # Only fill if area is significant
-                    print(f"  Found underfill region with area {region.area:.4f}")
-                    zigzag_paths.append(generate_zigzag_fill(region, toolpath_width))
-    
-    return contour_path, zigzag_paths
+    return path
 
 def connect_contours(contours, toolpath_width, prev_end_point=None):
     """
@@ -351,14 +283,13 @@ def create_smooth_connection(start_point, end_point, toolpath_width):
     
     return connection_points
 
-def visualize_fill_path(polygon, contour_path, zigzag_paths=None, title="Continuous Fill Path"):
+def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
     """
-    Visualize the polygon and the fill paths.
+    Visualize the polygon and the fill path.
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon
-        contour_path (list): List of points representing the contour path
-        zigzag_paths (list): List of lists of points representing zig-zag fill paths
+        path (list): List of points representing the path
         title (str): Title for the plot
     """
     # Check if visualization is enabled
@@ -379,9 +310,9 @@ def visualize_fill_path(polygon, contour_path, zigzag_paths=None, title="Continu
         x, y = interior.xy
         ax.plot(x, y, 'b-', linewidth=2)
     
-    # Plot the contour path
-    if contour_path:
-        path_x, path_y = zip(*contour_path)
+    # Plot the fill path
+    if path:
+        path_x, path_y = zip(*path)
         
         # Use a colormap to show the direction of the path
         points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
@@ -394,19 +325,12 @@ def visualize_fill_path(polygon, contour_path, zigzag_paths=None, title="Continu
         ax.add_collection(lc)
         
         # Mark start and end points
-        ax.plot(path_x[0], path_y[0], 'go', markersize=8, label='Contour Start')
-        ax.plot(path_x[-1], path_y[-1], 'ro', markersize=8, label='Contour End')
+        ax.plot(path_x[0], path_y[0], 'go', markersize=8, label='Start')
+        ax.plot(path_x[-1], path_y[-1], 'ro', markersize=8, label='End')
         
         # Add a colorbar to show progression
         cbar = plt.colorbar(lc, ax=ax)
-        cbar.set_label('Contour Direction')
-    
-    # Plot zig-zag paths if any
-    if zigzag_paths:
-        for i, zigzag in enumerate(zigzag_paths):
-            if zigzag and len(zigzag) >= 2:  # Need at least 2 points to plot a line
-                zx, zy = zip(*zigzag)
-                ax.plot(zx, zy, 'm-', linewidth=1, alpha=0.7, label=f'Zig-Zag {i+1}' if i == 0 else "")
+        cbar.set_label('Path Direction')
     
     ax.set_aspect('equal')
     ax.set_title(title)
