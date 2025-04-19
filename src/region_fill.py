@@ -8,7 +8,8 @@ from shapely.affinity import scale, translate
 from matplotlib.collections import LineCollection # Import moved here as it's used by visualize_fill_path
 
 from src.config import get_config # Import config getter
-from src.fill_smooth_contour import generate_smooth_contour_fill # Import the specific fill algorithm
+from src.fill_smooth_contour import generate_smooth_contour_fill # Import contour fill
+from src.fill_zigzag import generate_zigzag_fill # Import zigzag fill
 
 # --- Public Fill Function ---
 
@@ -90,6 +91,10 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     if algorithm == 'contour':
         print("Generating contour-based fill pattern...")
         fill_path = generate_smooth_contour_fill(polygon, toolpath_width) # Call the imported function
+    elif algorithm == 'zigzag':
+        print("Generating zigzag fill pattern...")
+        # TODO: Make angle configurable? Defaulting to 45 degrees.
+        fill_path = generate_zigzag_fill(polygon, toolpath_width, angle=45)
     # Add other algorithms here with 'elif algorithm == "other_algo":'
     else:
         print(f"ERROR: Unknown region fill algorithm specified in config: {algorithm}")

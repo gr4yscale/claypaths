@@ -1,11 +1,11 @@
 
 ### Testing
-max_layers_to_process: 4                # For quicker test cycles
+max_layers_to_process: 3                # For quicker test cycles
 
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 0.4
+toolpath_width: 0.9
 # Height of each layer in mm
 layer_height: 0.5
 
@@ -31,6 +31,7 @@ visualize_problematic_segments: False
 
 # The region fill path before optimization
 visualize_fill_paths: True
+region_fill_algorithm: "zigzag"
 
 
 ### Toolpath optimizer
