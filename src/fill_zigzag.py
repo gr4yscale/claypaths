@@ -13,7 +13,8 @@ def generate_zigzag_fill(polygon, toolpath_width, angle=45):
         angle (float): Angle of the fill lines in degrees (0 is horizontal).
 
     Returns:
-        list: List of points representing the continuous zigzag toolpath.
+        list[list[tuple[float, float]]]: A list of paths, where each path is a list of 
+                                         points representing an individual fill segment.
     """
     if not polygon.is_valid or polygon.is_empty:
         print("ERROR: Invalid or empty polygon for zigzag fill.")
@@ -40,63 +41,54 @@ def generate_zigzag_fill(polygon, toolpath_width, angle=45):
         print("  No fill lines generated (polygon might be too small).")
         return []
 
-    # Intersect lines with the rotated polygon
+    # Intersect lines with the rotated polygon's area
     intersected_segments = []
     for line in lines:
+        # Intersect the infinite horizontal line with the polygon's area
         intersection = rotated_polygon.intersection(line)
+        
         if intersection.is_empty:
             continue
+            
+        # Collect the resulting line segments that are inside the polygon
         if isinstance(intersection, LineString):
-            intersected_segments.append(list(intersection.coords))
+            # Ensure segment has non-zero length
+            if intersection.length > 1e-6:
+                intersected_segments.append(list(intersection.coords))
         elif isinstance(intersection, MultiLineString):
-            for seg in intersection.geoms:
-                intersected_segments.append(list(seg.coords))
+            for segment in intersection.geoms:
+                 # Ensure segment has non-zero length
+                if segment.length > 1e-6:
+                    intersected_segments.append(list(segment.coords))
+        # Ignore Point or other geometry types resulting from intersection
 
     if not intersected_segments:
         print("  No intersections found between fill lines and polygon.")
         return []
 
-    # Sort segments by their average Y coordinate, then by min X
-    intersected_segments.sort(key=lambda seg: ( (seg[0][1] + seg[-1][1]) / 2, min(p[0] for p in seg) ))
+    # Sort segments primarily by their Y coordinate for consistent processing order
+    intersected_segments.sort(key=lambda seg: (seg[0][1] + seg[-1][1]) / 2)
 
-    # Connect segments in a zigzag pattern
-    zigzag_path = []
-    for i, segment in enumerate(intersected_segments):
-        # Ensure segment points are ordered by X coordinate
-        segment.sort(key=lambda p: p[0])
-        
-        start_point = segment[0]
-        end_point = segment[-1]
-
-        if i % 2 == 0:  # Even index: left to right
-            current_segment_points = segment
-        else:  # Odd index: right to left
-            current_segment_points = segment[::-1]
-
-        # Connect to the previous segment's end point if not the first segment
-        if zigzag_path:
-            # Add the connection point (start of the current segment in zigzag order)
-            zigzag_path.append(current_segment_points[0]) 
-            
-        # Add the points of the current segment
-        zigzag_path.extend(current_segment_points)
-
-    if not zigzag_path:
-        print("  Zigzag path is empty after connecting segments.")
-        return []
-
-    # Rotate the path back
-    final_path_points = []
+    # Rotate each segment back individually
+    final_paths = []
     origin_np = np.array([center.x, center.y])
     cos_a = np.cos(np.radians(angle))
     sin_a = np.sin(np.radians(angle))
     rotation_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
 
-    for point in zigzag_path:
-        point_np = np.array(point)
-        # Translate point to origin, rotate, translate back
-        rotated_point = np.dot(rotation_matrix, point_np - origin_np) + origin_np
-        final_path_points.append(tuple(rotated_point))
+    for segment in intersected_segments:
+        # Ensure segment points are ordered by X coordinate before rotation
+        segment.sort(key=lambda p: p[0]) 
+        
+        rotated_path = []
+        for point in segment:
+            point_np = np.array(point)
+            # Translate point to origin, rotate, translate back
+            rotated_point = np.dot(rotation_matrix, point_np - origin_np) + origin_np
+            rotated_path.append(tuple(rotated_point))
+        
+        if rotated_path:
+            final_paths.append(rotated_path)
 
-    print(f"  Generated zigzag path with {len(final_path_points)} points.")
-    return final_path_points
+    print(f"  Generated {len(final_paths)} separate zigzag segments.")
+    return final_paths

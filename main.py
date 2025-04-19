@@ -117,17 +117,29 @@ def main():
                 print(f"\nGenerating fill paths for layer {layer_idx+1}/{len(layers_to_process)}...")
                 
                 # Generate fill paths for each polygon in the layer
-                layer_paths = []
+                layer_paths = [] # This will now store all paths (segments) for the layer
                 for j, polygon in enumerate(layer):
-                    # Generate the fill path for this polygon
-                    fill_path = generate_continuous_fill(polygon, toolpath_width)
+                    # Generate the fill path(s) for this polygon
+                    # Note: fill_result can be a single path (list) or a list of paths (list of lists)
+                    fill_result = generate_continuous_fill(polygon, toolpath_width)
                     
-                    if fill_path and len(fill_path) > 1:
-                        # Visualize the fill path for this polygon
-                        visualize_fill_path(polygon, fill_path, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path")
-                        layer_paths.append(fill_path)
-                
-                all_layer_paths.append(layer_paths)
+                    if fill_result:
+                        # Determine if we got a single path or a list of paths
+                        is_list_of_paths = isinstance(fill_result[0], list) if fill_result else False
+                        
+                        # Visualize the fill path(s) for this polygon
+                        visualize_fill_path(polygon, fill_result, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path(s)")
+                        
+                        if is_list_of_paths:
+                            # Extend layer_paths with the list of paths (segments)
+                            # Filter out very short paths if necessary
+                            valid_paths = [p for p in fill_result if len(p) > 1]
+                            layer_paths.extend(valid_paths)
+                        elif len(fill_result) > 1:
+                            # Append the single path
+                            layer_paths.append(fill_result)
+                            
+                all_layer_paths.append(layer_paths) # Add all paths for this layer
             
             # Now optimize the paths across all layers
             print("\nOptimizing paths across all layers...")

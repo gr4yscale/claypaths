@@ -25,7 +25,10 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
                                as the optimizer will handle path ordering
         
     Returns:
-        list: List of points representing the continuous toolpath
+        list | list[list[tuple[float, float]]]: 
+            For 'contour', returns a single list of points representing the continuous toolpath.
+            For 'zigzag', returns a list of paths (each path is a list of points).
+            Returns an empty list on failure.
     """
     # Get polygon properties for logging
     area = 0
@@ -87,24 +90,32 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     print(f"Using region fill algorithm: {algorithm}")
 
     # Dispatch to the appropriate fill function
-    fill_path = []
+    fill_result = []
     if algorithm == 'contour':
         print("Generating contour-based fill pattern...")
-        fill_path = generate_smooth_contour_fill(polygon, toolpath_width) # Call the imported function
+        fill_result = generate_smooth_contour_fill(polygon, toolpath_width) # Returns a single path (list)
+        if fill_result:
+             print(f"Successfully generated contour fill path with {len(fill_result)} points")
+        else:
+             print("WARNING: Failed to generate contour fill path (empty result)")
+
     elif algorithm == 'zigzag':
         print("Generating zigzag fill pattern...")
         # TODO: Make angle configurable? Defaulting to 45 degrees.
-        fill_path = generate_zigzag_fill(polygon, toolpath_width, angle=45)
+        fill_result = generate_zigzag_fill(polygon, toolpath_width, angle=45) # Returns a list of paths
+        if fill_result:
+             num_points = sum(len(p) for p in fill_result)
+             print(f"Successfully generated {len(fill_result)} zigzag segments with {num_points} total points")
+             print("NOTE: Zigzag fill returns a list of paths, not a single continuous path.")
+        else:
+             print("WARNING: Failed to generate zigzag fill segments (empty result)")
+             
     # Add other algorithms here with 'elif algorithm == "other_algo":'
     else:
         print(f"ERROR: Unknown region fill algorithm specified in config: {algorithm}")
-        return [] # Return empty path for unknown algorithm
-    if fill_path:
-        print(f"Successfully generated fill path with {len(fill_path)} points")
-    else:
-        print("WARNING: Failed to generate fill path (empty result)")
-    
-    return fill_path
+        return [] # Return empty list/path for unknown algorithm
+
+    return fill_result
 
 
 # --- General Path Utilities ---
@@ -112,11 +123,12 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
 
 def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
     """
-    Visualize the polygon and the fill path.
+    Visualize the polygon and the fill path(s).
     
     Args:
         polygon (shapely.geometry.Polygon): The polygon
-        path (list): List of points representing the path
+        paths (list | list[list]): Either a single path (list of points) 
+                                   or a list of paths (list of lists of points).
         title (str): Title for the plot
     """
     # Check if visualization is enabled
@@ -136,29 +148,71 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
     for interior in polygon.interiors:
         x, y = interior.xy
         ax.plot(x, y, 'b-', linewidth=2)
-    
-    # Plot the fill path
+
+    # Determine if we have a single path or a list of paths
     if path:
-        path_x, path_y = zip(*path)
-        
-        # Use a colormap to show the direction of the path
-        points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        # Create a colorful line collection
-        # Note: LineCollection is imported at the top now
-        lc = LineCollection(segments, cmap='viridis', linewidth=1.5)
-        lc.set_array(np.linspace(0, 1, len(path_x)-1))
-        ax.add_collection(lc)
-        
-        # Mark start and end points
-        ax.plot(path_x[0], path_y[0], 'go', markersize=8, label='Start')
-        ax.plot(path_x[-1], path_y[-1], 'ro', markersize=8, label='End')
-        
-        # Add a colorbar to show progression
-        cbar = plt.colorbar(lc, ax=ax)
-        cbar.set_label('Path Direction')
-    
+        # Check if the first element of path is itself a list (indicating list of paths)
+        is_list_of_paths = isinstance(path[0], list) if path else False
+    else:
+        is_list_of_paths = False
+
+    # Plot the fill path(s)
+    if path:
+        if is_list_of_paths:
+            print(f"  Visualizing {len(path)} separate path segments...")
+            all_segments = []
+            start_points = []
+            end_points = []
+            total_points = 0
+            for single_path in path: # Iterate through the list of paths
+                if len(single_path) > 1:
+                    path_x, path_y = zip(*single_path)
+                    points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
+                    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+                    all_segments.extend(segments)
+                    start_points.append((path_x[0], path_y[0]))
+                    end_points.append((path_x[-1], path_y[-1]))
+                    total_points += len(single_path)
+                elif len(single_path) == 1: # Handle single-point paths if they occur
+                    start_points.append((single_path[0][0], single_path[0][1]))
+                    end_points.append((single_path[0][0], single_path[0][1]))
+                    total_points += 1
+
+
+            if all_segments:
+                 # Create a line collection for all segments
+                 # Use a single color as directionality across segments is less meaningful
+                 lc = LineCollection(all_segments, colors='orange', linewidth=1.5)
+                 ax.add_collection(lc)
+                 
+                 # Mark start and end points of each segment
+                 start_x, start_y = zip(*start_points)
+                 end_x, end_y = zip(*end_points)
+                 ax.plot(start_x, start_y, 'go', markersize=5, label='Segment Starts')
+                 ax.plot(end_x, end_y, 'ro', markersize=5, label='Segment Ends')
+            elif total_points > 0: # Only single points were generated
+                 start_x, start_y = zip(*start_points)
+                 ax.plot(start_x, start_y, 'go', markersize=5, label='Points')
+
+
+        else: # It's a single path
+             path_x, path_y = zip(*path) # Unpack the single path
+             points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
+             segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+             # Create a colorful line collection for the single path
+             lc = LineCollection(segments, cmap='viridis', linewidth=1.5)
+             lc.set_array(np.linspace(0, 1, len(path_x)-1))
+             ax.add_collection(lc)
+
+             # Mark start and end points
+             ax.plot(path_x[0], path_y[0], 'go', markersize=8, label='Start')
+             ax.plot(path_x[-1], path_y[-1], 'ro', markersize=8, label='End')
+
+             # Add a colorbar to show progression
+             cbar = plt.colorbar(lc, ax=ax)
+             cbar.set_label('Path Direction')
+
     ax.set_aspect('equal')
     ax.set_title(title)
     ax.set_xlabel("X (mm)")
