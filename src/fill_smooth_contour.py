@@ -14,7 +14,9 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
         toolpath_width (float): Width of the toolpath.
 
     Returns:
-        list: List of points representing the continuous toolpath.
+        tuple[list, Polygon | None]: A tuple containing:
+            - list: List of points representing the continuous toolpath.
+            - Polygon | None: The innermost polygon boundary reached, or None if no fill generated.
     """
     # The code below this comment block was the core logic of the original contour fill
     if not polygon.is_valid:
@@ -92,12 +94,19 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
         except Exception as e:
             print(f"  Error during buffer operation: {e}")
             break
+            
+    # The 'current_polygon' at this point is the boundary of the unfilled region
+    # (or the last valid polygon before it became too small/invalid)
     
     # Connect the contours to form a continuous spiral path
     # We don't optimize for previous end point here as the toolpath optimizer will handle that
     path = connect_contours(contours, toolpath_width)
     
-    return path
+    # Return the path and the final inner polygon
+    # Return None for the polygon if the buffer failed early or area was too small initially
+    last_inner_polygon = current_polygon if current_polygon.area > 1e-6 else None
+    
+    return path, last_inner_polygon
 
 # --- Contour Connection Logic (Moved from region_fill.py) ---
 

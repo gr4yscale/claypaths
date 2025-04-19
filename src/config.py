@@ -7,7 +7,7 @@ DEFAULT_CONFIG = {
     'layer_height': 1.0,    # Default layer height in mm
     'max_layers_to_process': 6,  # Maximum number of layers to process
     'optimization_method': 'greedy',  # Preferred optimization method
-    'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', etc.)
+    'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', 'hybrid_contour_zigzag', etc.)
     
     'visualize_stl_mesh': False,
     'visualize_layer_contours': False,

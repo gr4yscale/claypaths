@@ -2,10 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, LineString, Point, LinearRing
+from shapely.geometry import Polygon, LineString, Point, LinearRing, MultiPolygon # Added MultiPolygon
 from shapely.ops import unary_union
 from shapely.affinity import scale, translate
 from matplotlib.collections import LineCollection # Import moved here as it's used by visualize_fill_path
+
+from src.config import get_config # Import config getter
+from shapely.validation import make_valid
 
 from src.config import get_config # Import config getter
 from src.fill_smooth_contour import generate_smooth_contour_fill # Import contour fill
@@ -26,9 +29,10 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
         
     Returns:
         list | list[list[tuple[float, float]]]: 
-            For 'contour', returns a single list of points.
-            For 'zigzag', returns a list of paths (each path is a list of points), 
-            split where continuity is broken by holes.
+            For 'contour', returns a single list of points (list[tuple]).
+            For 'zigzag', returns a list of paths (list[list[tuple]]), split by holes.
+            For 'hybrid_contour_zigzag', returns a list of paths (list[list[tuple]]), 
+            containing the contour path first, followed by zigzag paths for unfilled regions.
             Returns an empty list on failure.
     """
     # Get polygon properties for logging
@@ -92,9 +96,13 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
 
     # Dispatch to the appropriate fill function
     fill_result = []
+    unfilled_regions_for_viz = [] # Store unfilled regions for visualization if hybrid
+
     if algorithm == 'contour':
         print("Generating contour-based fill pattern...")
-        fill_result = generate_smooth_contour_fill(polygon, toolpath_width) # Returns a single path (list)
+        # Note: generate_smooth_contour_fill now returns (path, last_polygon)
+        contour_path, _ = generate_smooth_contour_fill(polygon, toolpath_width) 
+        fill_result = contour_path # Keep return type as single path for pure contour
         if fill_result:
              print(f"Successfully generated contour fill path with {len(fill_result)} points")
         else:
@@ -103,34 +111,122 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     elif algorithm == 'zigzag':
         print("Generating zigzag fill pattern...")
         # TODO: Make angle configurable? Defaulting to 45 degrees.
-        fill_result = generate_zigzag_fill(polygon, toolpath_width, angle=45) # Returns list[list[tuple]]
+        zigzag_paths = generate_zigzag_fill(polygon, toolpath_width, angle=45) # Returns list[list[tuple]]
+        fill_result = zigzag_paths # Keep return type as list of paths
         if fill_result:
              num_paths = len(fill_result)
              num_points = sum(len(p) for p in fill_result)
              print(f"Successfully generated {num_paths} zigzag path(s) with {num_points} total points")
         else:
              print("WARNING: Failed to generate zigzag fill path(s) (empty result)")
+
+    elif algorithm == 'hybrid_contour_zigzag':
+        print("Generating hybrid contour + zigzag fill pattern...")
+        all_paths = []
+        
+        # 1. Generate contour fill
+        contour_path, last_inner_polygon = generate_smooth_contour_fill(polygon, toolpath_width)
+        if contour_path:
+            all_paths.append(contour_path) # Add contour path as the first path
+            print(f"  Generated contour part with {len(contour_path)} points.")
+        else:
+            print("  WARNING: Failed to generate contour part.")
+
+        # 2. Detect unfilled regions
+        unfilled_regions = _detect_unfilled_regions(polygon, last_inner_polygon)
+        unfilled_regions_for_viz = unfilled_regions # Save for visualization
+        print(f"  Detected {len(unfilled_regions)} unfilled region(s).")
+
+        # 3. Generate zigzag fill for unfilled regions
+        total_zigzag_points = 0
+        for i, region in enumerate(unfilled_regions):
+            print(f"    Generating zigzag fill for unfilled region {i+1}...")
+            # TODO: Make angle configurable?
+            region_zigzag_paths = generate_zigzag_fill(region, toolpath_width, angle=45)
+            if region_zigzag_paths:
+                num_region_paths = len(region_zigzag_paths)
+                num_region_points = sum(len(p) for p in region_zigzag_paths)
+                print(f"      Generated {num_region_paths} zigzag path(s) with {num_region_points} points.")
+                all_paths.extend(region_zigzag_paths) # Add zigzag paths to the list
+                total_zigzag_points += num_region_points
+            else:
+                print(f"      WARNING: Failed to generate zigzag fill for region {i+1}.")
+        
+        fill_result = all_paths # Return type is list of paths
+        total_points = sum(len(p) for p in fill_result)
+        print(f"Successfully generated hybrid fill with {len(fill_result)} total path(s) and {total_points} total points.")
              
     # Add other algorithms here with 'elif algorithm == "other_algo":'
     else:
         print(f"ERROR: Unknown region fill algorithm specified in config: {algorithm}")
         return [] # Return empty list/path for unknown algorithm
 
+    # Visualize the result (passing unfilled regions if generated)
+    visualize_fill_path(polygon, fill_result, 
+                        title=f"Fill Path(s) - Algorithm: {algorithm}", 
+                        unfilled_regions=unfilled_regions_for_viz)
+
     return fill_result
 
 
-# --- General Path Utilities ---
-# (These functions might be useful for other fill algorithms or visualization)
+# --- Internal Helper Functions ---
 
-def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
+def _detect_unfilled_regions(original_polygon, inner_boundary_polygon):
     """
-    Visualize the polygon and the fill path(s).
+    Calculates the region(s) between the original polygon and the inner boundary.
+
+    Args:
+        original_polygon (Polygon): The initial polygon for the layer slice.
+        inner_boundary_polygon (Polygon | None): The innermost polygon reached by contour filling.
+
+    Returns:
+        list[Polygon]: A list of polygons representing the unfilled areas.
+                       Returns an empty list if inner_boundary is None or invalid.
+    """
+    unfilled = []
+    if inner_boundary_polygon is None or not inner_boundary_polygon.is_valid or inner_boundary_polygon.is_empty:
+        # If no inner boundary, the whole original polygon might be considered unfilled 
+        # (or contour fill failed), but for zigzag fill, let's return empty for now.
+        # Alternatively, could return [original_polygon] if contour path was empty.
+        print("  No valid inner boundary polygon provided for difference calculation.")
+        return []
+
+    try:
+        # Calculate the difference: Original - Inner = Unfilled Area
+        difference = original_polygon.difference(inner_boundary_polygon)
+        
+        # Ensure the result is valid
+        if not difference.is_valid:
+            difference = make_valid(difference) # Requires shapely >= 1.8
+            # difference = difference.buffer(0) # Older shapely versions
+
+        if difference.is_empty:
+            print("  Difference calculation resulted in empty geometry.")
+        elif isinstance(difference, Polygon):
+            unfilled.append(difference)
+        elif isinstance(difference, MultiPolygon):
+            unfilled.extend(list(difference.geoms))
+        else:
+            print(f"  Difference calculation resulted in unexpected type: {difference.geom_type}")
+            
+    except Exception as e:
+        print(f"  Error calculating difference for unfilled regions: {e}")
+
+    return unfilled
+
+
+# --- Visualization Utility ---
+
+def visualize_fill_path(polygon, path, title="Continuous Fill Path", unfilled_regions=None):
+    """
+    Visualize the polygon, the fill path(s), and optionally the unfilled regions.
     
     Args:
-        polygon (shapely.geometry.Polygon): The polygon
-        paths (list | list[list]): Either a single path (list of points) 
+        polygon (shapely.geometry.Polygon): The polygon.
+        path (list | list[list]): Either a single path (list of points) 
                                    or a list of paths (list of lists of points).
-        title (str): Title for the plot
+        title (str): Title for the plot.
+        unfilled_regions (list[Polygon], optional): List of polygons representing unfilled areas.
     """
     # Check if visualization is enabled
     from src.config import get_config
@@ -148,19 +244,36 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
     # Plot holes if any
     for interior in polygon.interiors:
         x, y = interior.xy
-        ax.plot(x, y, 'b-', linewidth=2)
+        ax.plot(x, y, 'b--', linewidth=1) # Use dashed line for holes
+
+    # Plot unfilled regions if provided
+    if unfilled_regions:
+        print(f"  Visualizing {len(unfilled_regions)} unfilled region(s)...")
+        for i, region in enumerate(unfilled_regions):
+            if isinstance(region, Polygon):
+                x, y = region.exterior.xy
+                ax.fill(x, y, alpha=0.3, fc='yellow', ec='orange', linewidth=1, linestyle='--', label='Unfilled Region' if i == 0 else "")
+                for interior in region.interiors:
+                    x_int, y_int = interior.xy
+                    ax.fill(x_int, y_int, alpha=1.0, fc='white', ec='orange', linewidth=1, linestyle='--') # Punch holes visually
 
     # Determine if we have a single path or a list of paths
+    # Handle cases: empty list, list with one path, list with multiple paths
+    is_list_of_paths = False
     if path:
-        # Check if the first element of path is itself a list (indicating list of paths)
-        is_list_of_paths = isinstance(path[0], list) if path else False
-    else:
-        is_list_of_paths = False
+        # Check if the first element is a list (of coordinates) or a tuple (coordinate)
+        # This distinguishes between list[list[tuple]] and list[tuple]
+        if isinstance(path[0], list):
+             is_list_of_paths = True
+        elif isinstance(path[0], tuple):
+             # It's a single path (list of tuples), treat as list containing one path
+             path = [path] # Wrap the single path in a list for consistent processing below
+             is_list_of_paths = True # Now it is technically a list of paths (albeit one)
+        # If path[0] is neither list nor tuple, something is wrong, but proceed assuming list of paths
 
     # Plot the fill path(s)
-    if path:
-        if is_list_of_paths:
-            print(f"  Visualizing {len(path)} separate path segments...")
+    if path and is_list_of_paths: # Now always process as list of paths
+            print(f"  Visualizing {len(path)} path(s)...")
             all_segments = []
             start_points = []
             end_points = []
@@ -189,30 +302,19 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path"):
                  # Mark start and end points of each segment
                  start_x, start_y = zip(*start_points)
                  end_x, end_y = zip(*end_points)
-                 ax.plot(start_x, start_y, 'go', markersize=5, label='Segment Starts')
-                 ax.plot(end_x, end_y, 'ro', markersize=5, label='Segment Ends')
+                 # Use different colors/markers for start/end of each path
+                 ax.plot(start_x, start_y, 'go', markersize=5, alpha=0.7, label='Path Starts' if not ax.get_legend() else "")
+                 ax.plot(end_x, end_y, 'ro', markersize=5, alpha=0.7, label='Path Ends' if not ax.get_legend() else "")
             elif total_points > 0: # Only single points were generated
                  start_x, start_y = zip(*start_points)
-                 ax.plot(start_x, start_y, 'go', markersize=5, label='Points')
+                 ax.plot(start_x, start_y, 'go', markersize=5, label='Single Points' if not ax.get_legend() else "")
 
-
-        else: # It's a single path
-             path_x, path_y = zip(*path) # Unpack the single path
-             points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
-             segments = np.concatenate([points[:-1], points[1:]], axis=1)
-
-             # Create a colorful line collection for the single path
-             lc = LineCollection(segments, cmap='viridis', linewidth=1.5)
-             lc.set_array(np.linspace(0, 1, len(path_x)-1))
-             ax.add_collection(lc)
-
-             # Mark start and end points
-             ax.plot(path_x[0], path_y[0], 'go', markersize=8, label='Start')
-             ax.plot(path_x[-1], path_y[-1], 'ro', markersize=8, label='End')
-
-             # Add a colorbar to show progression
-             cbar = plt.colorbar(lc, ax=ax)
-             cbar.set_label('Path Direction')
+    # Add legend if labels were added
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        # Remove duplicate labels
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys())
 
     ax.set_aspect('equal')
     ax.set_title(title)
