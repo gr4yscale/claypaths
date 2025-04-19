@@ -118,35 +118,16 @@ def main():
                 
                 # Generate fill paths for each polygon in the layer
                 layer_paths = []
-                layer_contour_paths = []
-                layer_zigzag_paths = []
-                combined_layer_paths = [] # For the optimizer
-
                 for j, polygon in enumerate(layer):
-                    # Generate the fill path for this polygon (returns contour and zigzag paths)
-                    contour_path, zigzag_paths = generate_continuous_fill(polygon, toolpath_width)
-
-                    # Combine paths for the optimizer input
-                    current_fill_path = []
-                    if contour_path:
-                        current_fill_path.extend(contour_path)
-                    if zigzag_paths:
-                        for zz_path in zigzag_paths:
-                            if zz_path: # Ensure path is not empty
-                                current_fill_path.extend(zz_path)
-
-                    if current_fill_path and len(current_fill_path) > 1:
-                        # Visualize the fill path for this polygon, showing both types
-                        visualize_fill_path(polygon, contour_path, zigzag_paths, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path")
-                        combined_layer_paths.append(current_fill_path) # Add combined path for optimizer
-                    elif contour_path or any(zigzag_paths):
-                         # Visualize even if only one type exists or path is short
-                         visualize_fill_path(polygon, contour_path, zigzag_paths, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path (Short/Partial)")
-                         if current_fill_path: # Add if not empty, even if short
-                             combined_layer_paths.append(current_fill_path)
-
-                # Store the combined paths for this layer for the optimizer
-                all_layer_paths.append(combined_layer_paths)
+                    # Generate the fill path for this polygon
+                    fill_path = generate_continuous_fill(polygon, toolpath_width)
+                    
+                    if fill_path and len(fill_path) > 1:
+                        # Visualize the fill path for this polygon
+                        visualize_fill_path(polygon, fill_path, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path")
+                        layer_paths.append(fill_path)
+                
+                all_layer_paths.append(layer_paths)
             
             # Now optimize the paths across all layers
             print("\nOptimizing paths across all layers...")

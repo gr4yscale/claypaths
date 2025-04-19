@@ -88,108 +88,47 @@ def generate_continuous_fill(polygon, toolpath_width=1.0, prev_end_point=None):
     else:
         print("No zig-zag fills generated")
     
-    # Return both path types separately for visualization and later combination
-    return contour_path, zigzag_paths
-
+    # Combine paths, only including non-empty zig-zag paths
+    combined_path = contour_path.copy()
+    for zigzag in zigzag_paths:
+        if zigzag:  # Only add non-empty zig-zag paths
+            combined_path.extend(zigzag)
+    return combined_path
 
 def generate_zigzag_fill(polygon, toolpath_width):
     """
-    Generate zig-zag fill pattern for a polygon, clipped to the exact polygon boundaries.
-
+    Generate zig-zag fill pattern for a polygon.
+    
     Args:
         polygon (shapely.geometry.Polygon): The polygon to fill
         toolpath_width (float): Width of the toolpath
-
+        
     Returns:
-        list: List of points representing the zig-zag path, or empty list if fill is not possible/needed.
+        list: List of points representing the zig-zag path
     """
-    if not polygon.is_valid or polygon.is_empty:
-        # print(f"  Skipping zig-zag for invalid/empty polygon area: {polygon.area:.4f}")
+    if not polygon.is_valid:
         return []
-
+    
     # Get polygon bounds
     min_x, min_y, max_x, max_y = polygon.bounds
-    width = max_x - min_x
-    height = max_y - min_y
-
-    # Don't generate zig-zag for extremely thin slivers
-    # Check if both dimensions are smaller than half the toolpath width
-    if width < toolpath_width / 2 and height < toolpath_width / 2:
-        # print(f"  Skipping zig-zag for very small polygon area: {polygon.area:.4f}")
-        return []
-
-    # Generate lines across the bounding box
-    # Choose direction based on aspect ratio (fill along the longer dimension)
-    zigzag_lines = []
+    
+    # Calculate number of passes needed
     spacing = toolpath_width
-
-    if width >= height:
-        # Fill vertically (lines parallel to y-axis)
-        num_passes = int(width / spacing)
-        if num_passes < 1 and width > 0: num_passes = 1 # Ensure at least one pass if width > 0
-
-        for i in range(num_passes + 1):
-            x = min_x + i * spacing + spacing / 2 # Center lines within spacing
-            if x > max_x + spacing/2: continue # Avoid lines significantly outside bounds
-            # Extend lines slightly beyond bounds to ensure full intersection
-            line = LineString([(x, min_y - height*0.1 - spacing), (x, max_y + height*0.1 + spacing)])
-            zigzag_lines.append(line)
-    else:
-        # Fill horizontally (lines parallel to x-axis)
-        num_passes = int(height / spacing)
-        if num_passes < 1 and height > 0: num_passes = 1 # Ensure at least one pass if height > 0
-
-        for i in range(num_passes + 1):
-            y = min_y + i * spacing + spacing / 2 # Center lines within spacing
-            if y > max_y + spacing/2: continue # Avoid lines significantly outside bounds
-            # Extend lines slightly beyond bounds to ensure full intersection
-            line = LineString([(min_x - width*0.1 - spacing, y), (max_x + width*0.1 + spacing, y)])
-            zigzag_lines.append(line)
-
-    # Clip lines to the polygon
-    clipped_path_segments = []
-    for line in zigzag_lines:
-        try:
-            intersection = polygon.intersection(line)
-            if not intersection.is_empty:
-                if intersection.geom_type == 'LineString':
-                    clipped_path_segments.append(list(intersection.coords))
-                elif intersection.geom_type == 'MultiLineString':
-                    for segment in intersection.geoms:
-                        clipped_path_segments.append(list(segment.coords))
-        except Exception as e:
-            print(f"  Warning: Error during zig-zag line intersection: {e}")
-            # Optionally try buffering the polygon slightly if intersection fails
-            try:
-                intersection = polygon.buffer(1e-9).intersection(line)
-                if not intersection.is_empty:
-                     if intersection.geom_type == 'LineString':
-                         clipped_path_segments.append(list(intersection.coords))
-                     elif intersection.geom_type == 'MultiLineString':
-                         for segment in intersection.geoms:
-                             clipped_path_segments.append(list(segment.coords))
-            except Exception as e2:
-                 print(f"  Warning: Intersection failed even after buffer: {e2}")
-
-
-    if not clipped_path_segments:
-        # print(f"  No valid zig-zag segments generated for area {polygon.area:.4f}")
-        return []
-
-    # Connect segments into a zig-zag path (simple alternating connection)
+    num_passes = int((max_x - min_x) / spacing)
+    
+    # Generate zig-zag lines
     zigzag_path = []
-    for i, segment in enumerate(clipped_path_segments):
-        if i % 2 == 1: # Reverse every other segment for zig-zag
-            segment.reverse()
-        # Add segment points, avoiding duplicates between segments
-        if zigzag_path and segment and zigzag_path[-1] == segment[0]:
-            zigzag_path.extend(segment[1:])
+    for i in range(num_passes + 1):
+        x = min_x + i * spacing
+        # Alternate direction for each pass
+        if i % 2 == 0:
+            zigzag_path.append((x, min_y))
+            zigzag_path.append((x, max_y))
         else:
-            zigzag_path.extend(segment)
-
-    # print(f"  Generated zig-zag with {len(zigzag_path)} points for area {polygon.area:.4f}")
+            zigzag_path.append((x, max_y))
+            zigzag_path.append((x, min_y))
+    
     return zigzag_path
-
 
 def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     """
@@ -285,93 +224,27 @@ def generate_contour_fill(polygon, toolpath_width, prev_end_point=None):
     # Connect the contours to form a continuous spiral path
     contour_path = connect_contours(contours, toolpath_width)
     
-    # Create a union of all buffered contours to represent the filled area
-    # Buffer by half toolpath width on each side
-    buffered_area = Polygon() # Initialize as empty
-    if contours:
-        try:
-            # Buffer each contour LINESTRING (converted from LinearRing), not the polygon it came from
-            # Use join_style=2 (BEVEL) and cap_style=2 (FLAT) for better results with line buffering
-            buffered_lines = [LineString(c.coords).buffer(toolpath_width / 2, join_style=2, cap_style=2) for c in contours]
-            
-            # Combine the buffered lines into a single area
-            combined_buffered_area = unary_union(buffered_lines)
-
-            # Ensure the buffered area is valid
-            if not combined_buffered_area.is_valid:
-                print("  Warning: Combined buffered contour area is invalid, attempting fix...")
-                combined_buffered_area = combined_buffered_area.buffer(0) # Attempt to fix validity
-
-            # Intersect with the original polygon to constrain the filled area
-            # This prevents the buffered area from extending outside the original bounds
-            buffered_area = polygon.intersection(combined_buffered_area)
-            if not buffered_area.is_valid:
-                 print("  Warning: Final buffered area (intersection) is invalid, attempting fix...")
-                 buffered_area = buffered_area.buffer(0)
-
-        except Exception as e:
-            print(f"  Error calculating contour filled area: {e}")
-            # Fallback: Use the simpler buffer approach if LineString buffering fails
-            try:
-                 buffered_area = unary_union([c.buffer(toolpath_width/2) for c in contours])
-                 if not buffered_area.is_valid: buffered_area = buffered_area.buffer(0)
-                 buffered_area = polygon.intersection(buffered_area) # Still intersect
-                 if not buffered_area.is_valid: buffered_area = buffered_area.buffer(0)
-            except Exception as e2:
-                 print(f"  Fallback buffer method also failed: {e2}")
-                 buffered_area = Polygon() # Assign empty polygon on failure
-
-    # Calculate underfill regions as the difference between the original polygon and the calculated filled area
-    try:
-        underfill_regions = polygon.difference(buffered_area)
-        # Clean up potential small artifacts from the difference operation
-        if not underfill_regions.is_valid:
-             print("  Warning: Initial underfill region is invalid, attempting fix...")
-             underfill_regions = underfill_regions.buffer(0)
-    except Exception as e:
-        print(f"  Error calculating underfill regions: {e}")
-        underfill_regions = Polygon() # Empty polygon on error
-
+    # Create a union of all buffered contours
+    buffered_contours = unary_union([contour.buffer(toolpath_width/2) for contour in contours])
+    
+    # Calculate underfill regions as the difference between the original polygon and buffered contours
+    underfill_regions = polygon.difference(buffered_contours)
+    
     # Generate zig-zag fills for each underfill region
     zigzag_paths = []
-    # Set a minimum area slightly larger than zero to avoid tiny artifacts
-    min_zigzag_area = (toolpath_width * toolpath_width) * 0.1
-
     if underfill_regions.is_empty:
         print("  No underfill regions found")
     else:
-        regions_to_fill = []
         if underfill_regions.geom_type == 'Polygon':
-            regions_to_fill.append(underfill_regions)
+            if underfill_regions.area > (toolpath_width * toolpath_width):  # Only fill if area is significant
+                print(f"  Found underfill region with area {underfill_regions.area:.4f}")
+                zigzag_paths.append(generate_zigzag_fill(underfill_regions, toolpath_width))
         elif underfill_regions.geom_type == 'MultiPolygon':
-            regions_to_fill.extend(list(underfill_regions.geoms))
-        
-        print(f"  Found {len(regions_to_fill)} potential underfill region(s)")
-        fill_count = 0
-        skipped_count = 0
-        for region in regions_to_fill:
-            # Ensure region is valid before checking area and filling
-            if not region.is_valid:
-                region = region.buffer(0)
-            if not region.is_valid:
-                 print(f"    Skipping invalid underfill region geometry.")
-                 skipped_count += 1
-                 continue
-
-            if region.area > min_zigzag_area:  # Only fill if area is significant
-                # print(f"    Filling underfill region with area {region.area:.4f}")
-                zigzag_fill = generate_zigzag_fill(region, toolpath_width)
-                if zigzag_fill: # Only add if fill was actually generated
-                    zigzag_paths.append(zigzag_fill)
-                    fill_count += 1
-                else:
-                    # print(f"    Skipping region: zig-zag generation returned empty path (area: {region.area:.4f})")
-                    skipped_count += 1
-            else:
-                # print(f"    Skipping small underfill region with area {region.area:.4f}")
-                skipped_count += 1
-        print(f"  Generated zig-zag fill for {fill_count} underfill region(s). Skipped {skipped_count}.")
-
+            for region in underfill_regions.geoms:
+                if region.area > (toolpath_width * toolpath_width):  # Only fill if area is significant
+                    print(f"  Found underfill region with area {region.area:.4f}")
+                    zigzag_paths.append(generate_zigzag_fill(region, toolpath_width))
+    
     return contour_path, zigzag_paths
 
 def connect_contours(contours, toolpath_width, prev_end_point=None):
@@ -454,8 +327,6 @@ def create_smooth_connection(start_point, end_point, toolpath_width):
     Returns:
         list: List of points forming a smooth connection
     """
-    # Simple linear connection for now
-    # return [end_point] # Keep the smooth connection logic
     # Calculate direction vector
     dx = end_point[0] - start_point[0]
     dy = end_point[1] - start_point[1]
