@@ -26,8 +26,9 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
         
     Returns:
         list | list[list[tuple[float, float]]]: 
-            For 'contour', returns a single list of points representing the continuous toolpath.
-            For 'zigzag', returns a list of paths (each path is a list of points).
+            For 'contour', returns a single list of points.
+            For 'zigzag', returns a list of paths (each path is a list of points), 
+            split where continuity is broken by holes.
             Returns an empty list on failure.
     """
     # Get polygon properties for logging
@@ -102,13 +103,13 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     elif algorithm == 'zigzag':
         print("Generating zigzag fill pattern...")
         # TODO: Make angle configurable? Defaulting to 45 degrees.
-        fill_result = generate_zigzag_fill(polygon, toolpath_width, angle=45) # Returns a list of paths
+        fill_result = generate_zigzag_fill(polygon, toolpath_width, angle=45) # Returns list[list[tuple]]
         if fill_result:
+             num_paths = len(fill_result)
              num_points = sum(len(p) for p in fill_result)
-             print(f"Successfully generated {len(fill_result)} zigzag segments with {num_points} total points")
-             print("NOTE: Zigzag fill returns a list of paths, not a single continuous path.")
+             print(f"Successfully generated {num_paths} zigzag path(s) with {num_points} total points")
         else:
-             print("WARNING: Failed to generate zigzag fill segments (empty result)")
+             print("WARNING: Failed to generate zigzag fill path(s) (empty result)")
              
     # Add other algorithms here with 'elif algorithm == "other_algo":'
     else:

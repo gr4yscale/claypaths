@@ -121,25 +121,32 @@ def main():
                 for j, polygon in enumerate(layer):
                     # Generate the fill path(s) for this polygon
                     # Note: fill_result can be a single path (list) or a list of paths (list of lists)
-                    fill_result = generate_continuous_fill(polygon, toolpath_width)
+                    # Generate the fill path(s) for this polygon
+                    # Note: fill_result can be a single path (list) or a list of paths (list of lists)
+                    fill_result = generate_continuous_fill(polygon, toolpath_width) 
                     
                     if fill_result:
-                        # Determine if we got a single path or a list of paths
-                        is_list_of_paths = isinstance(fill_result[0], list) if fill_result else False
-                        
                         # Visualize the fill path(s) for this polygon
+                        # visualize_fill_path handles both single and multiple paths
                         visualize_fill_path(polygon, fill_result, f"Layer {layer_idx+1}, Polygon {j+1} Fill Path(s)")
-                        
+
+                        # Check if the result is a list of paths (zigzag) or a single path (contour)
+                        # We assume zigzag returns list[list] and contour returns list[tuple]
+                        # A robust check looks at the first element if the list is not empty
+                        is_list_of_paths = (isinstance(fill_result, list) and 
+                                            len(fill_result) > 0 and 
+                                            isinstance(fill_result[0], list))
+
                         if is_list_of_paths:
-                            # Extend layer_paths with the list of paths (segments)
-                            # Filter out very short paths if necessary
+                            # Extend layer_paths with the list of paths (segments) from zigzag
+                            # Filter out very short paths
                             valid_paths = [p for p in fill_result if len(p) > 1]
                             layer_paths.extend(valid_paths)
-                        elif len(fill_result) > 1:
-                            # Append the single path
+                        elif isinstance(fill_result, list) and len(fill_result) > 1:
+                            # Append the single path (from contour)
                             layer_paths.append(fill_result)
                             
-                all_layer_paths.append(layer_paths) # Add all paths for this layer
+                all_layer_paths.append(layer_paths) # Add all paths generated for this layer
             
             # Now optimize the paths across all layers
             print("\nOptimizing paths across all layers...")
