@@ -18,6 +18,7 @@ from src.config import get_config # Import config getter
 from src.fill_smooth_contour import generate_smooth_contour_fill # Import contour fill
 from src.fill_zigzag import generate_zigzag_fill # Import zigzag fill
 from src.fill_fermat_spiral import generate_fermat_spiral_fill # Import Fermat spiral fill
+from src.fill_hilbert import generate_hilbert_fill # Import Hilbert fill
 
 # --- Public Fill Function ---
 
@@ -35,11 +36,12 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     Returns:
         list | list[list[tuple[float, float]]]: 
             For 'contour', returns a single list of points (list[tuple]).
-            For 'zigzag', returns a list of paths (list[list[tuple]]), split by holes.
+            For 'zigzag', returns a list of paths (list[list[tuple]]), potentially split by holes.
             For 'hybrid_contour_zigzag', returns a list of paths (list[list[tuple]]),
             containing the contour path first, followed by zigzag paths for unfilled regions.
             For 'fermat_spiral', returns a single list of points (list[tuple]).
-            Returns an empty list on failure.
+            For 'hilbert', returns a single list of points (list[tuple]).
+            Returns an empty list or list of lists on failure or empty result.
     """
     # Get polygon properties for logging
     area = 0
@@ -122,6 +124,15 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
              print(f"Successfully generated Fermat spiral fill path with {len(fill_result)} points")
         else:
              print("WARNING: Failed to generate Fermat spiral fill path (empty result)")
+
+    elif algorithm == 'hilbert':
+        print("Generating Hilbert curve fill pattern...")
+        hilbert_path = generate_hilbert_fill(polygon, toolpath_width)
+        fill_result = hilbert_path # Keep return type as single path
+        if fill_result:
+             print(f"Successfully generated Hilbert fill path with {len(fill_result)} points")
+        else:
+             print("WARNING: Failed to generate Hilbert fill path (empty result)")
 
     elif algorithm == 'zigzag':
         print("Generating zigzag fill pattern...")

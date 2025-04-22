@@ -528,12 +528,12 @@ class ToolpathOptimizer:
             
         return smoothed_path
     
-    def visualize_optimized_path(self, layer_polygons, optimized_path, layer_idx):
+    def visualize_optimized_path(self, layer, optimized_path, layer_idx):
         """
         Visualize the optimized path for a layer.
         
         Args:
-            layer_polygons (list): List of polygons in the layer
+            layer (list): List of polygons in the layer
             optimized_path (list): Optimized path for the layer
             layer_idx (int): Layer index
         """
@@ -546,7 +546,7 @@ class ToolpathOptimizer:
         fig, ax = plt.subplots(figsize=(10, 10))
         
         # Plot the polygons
-        for polygon in layer_polygons:
+        for polygon in layer:
             x, y = polygon.exterior.xy
             ax.plot(x, y, 'b-', linewidth=2, label='Polygon Boundary')
             
