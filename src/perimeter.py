@@ -20,68 +20,87 @@ def generate_perimeter_paths(polygon, perimeter_count, toolpath_width):
         return [], polygon # Return original polygon if invalid or no perimeters needed
 
     perimeter_paths = []
-    current_polygon = polygon
+    inner_fill_polygon = polygon # Start with the original polygon
 
     print(f"  Generating {perimeter_count} perimeter(s)...")
 
+    # Store the polygon whose boundaries will form the paths for the current iteration
+    poly_for_paths = polygon 
+
     for i in range(perimeter_count):
-        # Calculate offset distance for this perimeter line
-        # The first perimeter is offset by half width, subsequent ones by full width
-        offset = -toolpath_width / 2.0 if i == 0 else -toolpath_width
+        # Calculate the inward offset distance from the original boundary
+        # Offset 1: -width/2
+        # Offset 2: -width/2 - width
+        # Offset i: -width/2 - (i-1)*width  (for i >= 1)
+        # Using 0-based index 'i': offset = -(i + 0.5) * toolpath_width
+        offset_dist = -(i + 0.5) * toolpath_width
         
-        # Apply the offset to the current polygon boundary
+        print(f"    Calculating offset {i+1} at distance {offset_dist:.3f}")
+        
         try:
-            # Offset the exterior inwards
-            inner_boundary = current_polygon.buffer(offset, join_style=2) # MITRE join style
+            # Generate the paths from the *previous* offset polygon's boundaries
+            if poly_for_paths:
+                 # Add exterior path
+                 perimeter_paths.append(list(poly_for_paths.exterior.coords))
+                 # Add interior (hole) paths
+                 for interior in poly_for_paths.interiors:
+                      perimeter_paths.append(list(interior.coords))
+                 print(f"      Added paths from boundary of polygon with area {poly_for_paths.area:.2f}")
+            else:
+                 print(f"      Skipping path generation for perimeter {i+1} as previous polygon was invalid.")
+                 inner_fill_polygon = None # No fill possible if a perimeter fails
+                 break # Stop generating perimeters
 
-            if not inner_boundary.is_valid:
-                 print(f"    Warning: Perimeter {i+1} offset resulted in invalid geometry, attempting fix.")
-                 inner_boundary = make_valid(inner_boundary)
-                 # inner_boundary = inner_boundary.buffer(0) # Older shapely
+            # Calculate the next inner polygon by offsetting the original polygon
+            offset_poly = polygon.buffer(offset_dist, join_style=2) # MITRE join style
 
-            if inner_boundary.is_empty or not isinstance(inner_boundary, (Polygon, MultiPolygon)):
-                 print(f"    Stopping perimeter generation at line {i+1}: Offset resulted in empty or non-polygon geometry.")
-                 current_polygon = None # Mark as invalid/too small
+            # --- Validation and Handling of Offset Result ---
+            if offset_poly.is_empty:
+                 print(f"    Stopping perimeter generation at offset {i+1}: Result is empty.")
+                 inner_fill_polygon = None 
                  break
-
-            # Handle MultiPolygon result (can happen if offset splits the shape)
-            # We typically want the largest resulting area for the next iteration
-            if isinstance(inner_boundary, MultiPolygon):
-                 print(f"    Warning: Perimeter {i+1} offset resulted in MultiPolygon. Selecting largest part.")
-                 largest_poly = max(inner_boundary.geoms, key=lambda p: p.area)
-                 if not isinstance(largest_poly, Polygon):
-                      print(f"    Stopping perimeter generation at line {i+1}: Largest part is not a Polygon.")
-                      current_polygon = None
-                      break
-                 inner_boundary = largest_poly
-
-            # Extract the path for this perimeter
-            # The path is the exterior of the *previous* polygon boundary
-            # and the interiors (holes) of the *previous* polygon boundary
-            perimeter_line_outer = list(current_polygon.exterior.coords)
-            perimeter_paths.append(perimeter_line_outer)
             
-            for hole in current_polygon.interiors:
-                 # Offset holes outwards by the same amount
-                 # Note: Offsetting holes requires careful handling, 
-                 # simply adding hole paths might not be correct for multiple perimeters.
-                 # For now, we add the original hole boundaries offset inwards.
-                 # A more robust approach might involve difference operations.
-                 # Let's just add the exterior path for now for simplicity.
-                 # TODO: Revisit hole handling for multiple perimeters.
-                 pass # Simplified: Only adding exterior perimeter for now
+            if not offset_poly.is_valid:
+                 print(f"    Warning: Offset {i+1} resulted in invalid geometry, attempting fix.")
+                 offset_poly = make_valid(offset_poly)
+                 # offset_poly = offset_poly.buffer(0) # Older shapely
+                 if not offset_poly.is_valid or offset_poly.is_empty:
+                      print(f"    Stopping perimeter generation at offset {i+1}: Could not fix invalid geometry.")
+                      inner_fill_polygon = None
+                      break
 
-            # Update the current polygon for the next iteration
-            current_polygon = inner_boundary
-            print(f"    Generated perimeter {i+1}. Remaining area: {current_polygon.area:.2f}")
+            # Handle MultiPolygon result (take the largest valid polygon)
+            if isinstance(offset_poly, MultiPolygon):
+                 print(f"    Warning: Offset {i+1} resulted in MultiPolygon. Selecting largest valid part.")
+                 valid_polygons = [p for p in offset_poly.geoms if isinstance(p, Polygon) and p.is_valid and not p.is_empty]
+                 if not valid_polygons:
+                      print(f"    Stopping perimeter generation at offset {i+1}: No valid polygons in MultiPolygon result.")
+                      inner_fill_polygon = None
+                      break
+                 offset_poly = max(valid_polygons, key=lambda p: p.area)
+                 print(f"      Selected largest polygon with area {offset_poly.area:.2f}")
+            
+            # Check if the result is a valid Polygon
+            if not isinstance(offset_poly, Polygon):
+                 print(f"    Stopping perimeter generation at offset {i+1}: Result is not a Polygon (type: {type(offset_poly)}).")
+                 inner_fill_polygon = None
+                 break
+            # --- End Validation ---
+
+            # Update for the next iteration
+            poly_for_paths = offset_poly # This polygon's boundaries are the paths for the *next* perimeter
+            inner_fill_polygon = offset_poly # This is the potential fill area after this offset
+
+            print(f"    Offset {i+1} successful. New inner area: {inner_fill_polygon.area:.2f}")
 
         except Exception as e:
-            print(f"    Error generating perimeter {i+1}: {e}")
-            current_polygon = None # Mark as invalid
+            print(f"    Error during offset {i+1} calculation: {e}")
+            inner_fill_polygon = None # Mark as invalid
             break
 
-    # The final 'current_polygon' is the area left for infill
-    inner_fill_polygon = current_polygon if current_polygon and current_polygon.is_valid and not current_polygon.is_empty else None
+    # Final check on the inner fill polygon
+    if inner_fill_polygon and (not inner_fill_polygon.is_valid or inner_fill_polygon.is_empty):
+         inner_fill_polygon = None
 
     print(f"  Finished generating {len(perimeter_paths)} perimeter paths.")
     if inner_fill_polygon:

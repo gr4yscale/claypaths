@@ -252,14 +252,14 @@ def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
 
 # --- Visualization Utility ---
 
-def visualize_fill_path(polygon, path, title="Continuous Fill Path", unfilled_regions=None):
+def visualize_fill_path(polygon, perimeter_paths, fill_paths, title="Layer Paths", unfilled_regions=None):
     """
-    Visualize the polygon, the fill path(s), and optionally the unfilled regions.
+    Visualize the original polygon, perimeter paths, fill paths, and optionally unfilled regions.
     
     Args:
-        polygon (shapely.geometry.Polygon): The polygon.
-        path (list | list[list]): Either a single path (list of points) 
-                                   or a list of paths (list of lists of points).
+        polygon (shapely.geometry.Polygon): The original polygon for the layer slice.
+        perimeter_paths (list[list[tuple]]): List of perimeter paths.
+        fill_paths (list | list[list]): Fill path(s) (single list or list of lists).
         title (str): Title for the plot.
         unfilled_regions (list[Polygon], optional): List of polygons representing unfilled areas.
     """
@@ -292,36 +292,49 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path", unfilled_re
                     x_int, y_int = interior.xy
                     ax.fill(x_int, y_int, alpha=1.0, fc='white', ec='orange', linewidth=1, linestyle='--') # Punch holes visually
 
-    # Determine if we have a single path or a list of paths
-    # The input 'path' can be:
-    # - An empty list: []
-    # - A single path: [(x,y), (x,y), ...]  (from contour)
-    # - A list of paths: [[(x,y), ...], [(x,y), ...]] (from zigzag or hybrid)
-    
-    paths_to_plot = []
-    if path:
-        # Check if the first element is a list (of coordinates) or a tuple (coordinate)
-        if isinstance(path[0], list):
-            # It's already a list of paths (zigzag or hybrid)
-            paths_to_plot = path
-        elif isinstance(path[0], tuple):
-            # It's a single path (contour), wrap it in a list for consistent processing
-            paths_to_plot = [path] 
-        # Add more robust checks if needed for malformed data
+    # --- Plot Perimeter Paths ---
+    if perimeter_paths:
+        print(f"  Visualizing {len(perimeter_paths)} perimeter path(s)...")
+        perim_segments = []
+        perim_starts = []
+        perim_ends = []
+        for p_path in perimeter_paths:
+             if len(p_path) > 1:
+                  px, py = zip(*p_path)
+                  points = np.array([px, py]).T.reshape(-1, 1, 2)
+                  segments = np.concatenate([points[:-1], points[1:]], axis=1)
+                  perim_segments.extend(segments)
+                  perim_starts.append((px[0], py[0]))
+                  perim_ends.append((px[-1], py[-1])) # Note: for closed loops, start=end
 
-    # Plot the fill path(s)
-    if paths_to_plot: 
-            print(f"  Visualizing {len(paths_to_plot)} path(s)...")
-            all_segments = []
+        if perim_segments:
+             lc_perim = LineCollection(perim_segments, colors='blue', linewidth=1.5, label='Perimeters')
+             ax.add_collection(lc_perim)
+             # Optionally mark start/end points for perimeters if needed
+             # start_x, start_y = zip(*perim_starts)
+             # ax.plot(start_x, start_y, 'co', markersize=4, alpha=0.5) 
+
+    # --- Plot Fill Paths ---
+    # Process fill_paths (could be list or list of lists) into a consistent list of paths format
+    fill_paths_list = []
+    if fill_paths:
+        if isinstance(fill_paths[0], list):
+            fill_paths_list = fill_paths # Already list of lists
+        elif isinstance(fill_paths[0], tuple):
+            fill_paths_list = [fill_paths] # Wrap single path
+            
+    if fill_paths_list: 
+            print(f"  Visualizing {len(fill_paths_list)} fill path(s)...")
+            fill_segments = []
             start_points = []
             end_points = []
             total_points = 0
-            for single_path in paths_to_plot: # Iterate through the list of paths
+            for single_path in fill_paths_list: # Iterate through the list of fill paths
                 if len(single_path) > 1:
                     path_x, path_y = zip(*single_path)
                     points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
                     segments = np.concatenate([points[:-1], points[1:]], axis=1)
-                    all_segments.extend(segments)
+                    fill_segments.extend(segments) # Add to fill segments list
                     start_points.append((path_x[0], path_y[0]))
                     end_points.append((path_x[-1], path_y[-1]))
                     total_points += len(single_path)
@@ -331,27 +344,28 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path", unfilled_re
                     total_points += 1
 
 
-            if all_segments:
-                 # Create a line collection for all segments
-                 # Use a single color as directionality across segments is less meaningful
-                 lc = LineCollection(all_segments, colors='orange', linewidth=1.5)
-                 ax.add_collection(lc)
+            if fill_segments:
+                 # Create a line collection for fill segments
+                 lc_fill = LineCollection(fill_segments, colors='orange', linewidth=1.0, linestyle='--', label='Fill Paths')
+                 ax.add_collection(lc_fill)
                  
-                 # Mark start and end points of each segment
-                 start_x, start_y = zip(*start_points)
-                 end_x, end_y = zip(*end_points)
-                 # Use different colors/markers for start/end of each path
-                 ax.plot(start_x, start_y, 'go', markersize=5, alpha=0.7, label='Path Starts' if not ax.get_legend() else "")
-                 ax.plot(end_x, end_y, 'ro', markersize=5, alpha=0.7, label='Path Ends' if not ax.get_legend() else "")
-            elif total_points > 0: # Only single points were generated
-                 start_x, start_y = zip(*start_points)
-                 ax.plot(start_x, start_y, 'go', markersize=5, label='Single Points' if not ax.get_legend() else "")
+                 # Mark start and end points of each fill path segment
+                 if start_points:
+                      start_x, start_y = zip(*start_points)
+                      ax.plot(start_x, start_y, 'go', markersize=4, alpha=0.7, label='Fill Starts' if not ax.get_legend() else "")
+                 if end_points:
+                      end_x, end_y = zip(*end_points)
+                      ax.plot(end_x, end_y, 'ro', markersize=4, alpha=0.7, label='Fill Ends' if not ax.get_legend() else "")
+            elif total_points > 0: # Only single points were generated in fill
+                 if start_points:
+                      start_x, start_y = zip(*start_points)
+                      ax.plot(start_x, start_y, 'go', markersize=4, label='Single Fill Points' if not ax.get_legend() else "")
 
     # Add legend if labels were added
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        # Remove duplicate labels
-        by_label = dict(zip(labels, handles))
+        # Create legend with unique labels
+        by_label = dict(zip(labels, handles)) # Use dict to automatically handle duplicates
         ax.legend(by_label.values(), by_label.keys())
 
     ax.set_aspect('equal')

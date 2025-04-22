@@ -5,7 +5,9 @@ import yaml
 DEFAULT_CONFIG = {
     'toolpath_width': 0.4,  # Default toolpath width in mm
     'layer_height': 1.0,    # Default layer height in mm
+    'perimeter_count': 2,   # Number of perimeter walls to generate
     'max_layers_to_process': 6,  # Maximum number of layers to process
+    'enable_toolpath_optimization': True, # Whether to run the toolpath optimization step
     'optimization_method': 'greedy',  # Preferred optimization method
     'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', 'hybrid_contour_zigzag', etc.)
     
