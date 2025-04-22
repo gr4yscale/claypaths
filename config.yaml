@@ -1,16 +1,16 @@
 
 ### Testing
-max_layers_to_process: 3                # For quicker test cycles
+max_layers_to_process: 1                # For quicker test cycles
 
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 0.3
+toolpath_width: 2.0
 # Height of each layer in mm
 layer_height: 0.5
 
 # Number of perimeter walls to generate
-perimeter_count: 2
+perimeter_count: 1
 
 
 
@@ -35,9 +35,10 @@ visualize_problematic_segments: False
 # The region fill path before optimization
 visualize_fill_paths: True
 
-region_fill_algorithm: "hybrid_contour_zigzag"
-#region_fill_algorithm: "zigzag"
-#region_fill_algorithm: "contour"
+#region_fill_algorithm: "hybrid_contour_zigzag" # Contour offset first, then zigzag for remaining areas
+#region_fill_algorithm: "zigzag"                # Simple back-and-forth lines
+#region_fill_algorithm: "contour"               # Continuous contour offsetting inwards
+region_fill_algorithm: "fermat_spiral"         # Continuous Fermat spiral from the center outwards
 
 ### Toolpath optimizer
 
@@ -53,7 +54,7 @@ max_points_per_segment: 1000
 # Scale factor for concorde TSP solver distances
 tsp_scale_factor: 100
 # Distance between points in smoothed path (mm)
-path_smoothing_segment_length: 0.2
+path_smoothing_segment_length: 0.5
 
 
 

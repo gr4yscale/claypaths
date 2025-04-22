@@ -9,7 +9,7 @@ DEFAULT_CONFIG = {
     'max_layers_to_process': 6,  # Maximum number of layers to process
     'enable_toolpath_optimization': True, # Whether to run the toolpath optimization step
     'optimization_method': 'greedy',  # Preferred optimization method
-    'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', 'hybrid_contour_zigzag', etc.)
+    'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', 'hybrid_contour_zigzag', 'fermat_spiral')
     
     'visualize_stl_mesh': False,
     'visualize_layer_contours': False,

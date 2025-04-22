@@ -170,7 +170,8 @@ def main():
 
             if enable_optimization:
                 print("\nStep 4: Optimizing paths across all layers...")
-                optimized_paths = optimizer.optimize_layers(layers_to_process, all_layer_paths)
+                # Pass the actual layer polygons (layers_to_process) along with the paths
+                optimized_paths = optimizer.optimize_layers(layers_to_process, all_layer_paths) 
                 paths_for_gcode = optimized_paths # Use optimized paths for GCode
 
                 # Visualize the optimized paths

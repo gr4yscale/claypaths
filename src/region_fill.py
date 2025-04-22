@@ -12,8 +12,12 @@ from src.config import get_config # Import config getter
 from shapely.validation import make_valid
 
 from src.config import get_config # Import config getter
+from shapely.validation import make_valid
+
+from src.config import get_config # Import config getter
 from src.fill_smooth_contour import generate_smooth_contour_fill # Import contour fill
 from src.fill_zigzag import generate_zigzag_fill # Import zigzag fill
+from src.fill_fermat_spiral import generate_fermat_spiral_fill # Import Fermat spiral fill
 
 # --- Public Fill Function ---
 
@@ -32,8 +36,9 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
         list | list[list[tuple[float, float]]]: 
             For 'contour', returns a single list of points (list[tuple]).
             For 'zigzag', returns a list of paths (list[list[tuple]]), split by holes.
-            For 'hybrid_contour_zigzag', returns a list of paths (list[list[tuple]]), 
+            For 'hybrid_contour_zigzag', returns a list of paths (list[list[tuple]]),
             containing the contour path first, followed by zigzag paths for unfilled regions.
+            For 'fermat_spiral', returns a single list of points (list[tuple]).
             Returns an empty list on failure.
     """
     # Get polygon properties for logging
@@ -108,6 +113,15 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
              print(f"Successfully generated contour fill path with {len(fill_result)} points")
         else:
              print("WARNING: Failed to generate contour fill path (empty result)")
+
+    elif algorithm == 'fermat_spiral':
+        print("Generating Fermat spiral fill pattern...")
+        spiral_path = generate_fermat_spiral_fill(polygon, toolpath_width)
+        fill_result = spiral_path # Keep return type as single path
+        if fill_result:
+             print(f"Successfully generated Fermat spiral fill path with {len(fill_result)} points")
+        else:
+             print("WARNING: Failed to generate Fermat spiral fill path (empty result)")
 
     elif algorithm == 'zigzag':
         print("Generating zigzag fill pattern...")
