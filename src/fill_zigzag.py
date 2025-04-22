@@ -68,47 +68,82 @@ def generate_zigzag_fill(polygon, toolpath_width, angle=45):
         return []
 
     # Sort segments primarily by Y, then by min X
-    intersected_segments.sort(key=lambda seg: ( (seg[0][1] + seg[-1][1]) / 2, min(p[0] for p in seg) ))
+    # Sort segments primarily by their average Y coordinate
+    intersected_segments.sort(key=lambda seg: (seg[0][1] + seg[-1][1]) / 2)
 
-    # Connect segments, breaking path if connection distance is too large (heuristic for holes)
+    # Connect segments intelligently
     final_paths = []
+    if not intersected_segments:
+        return []
+
     current_path = []
-    connection_threshold_sq = (2 * toolpath_width) ** 2 # Use squared distance
+    # Use squared distance for efficiency
+    # Allow connection slightly larger than toolpath_width for diagonal moves
+    connection_threshold_sq = (toolpath_width * 1.5) ** 2 
 
-    for i, segment in enumerate(intersected_segments):
-        # Ensure segment points are ordered by X coordinate initially
-        segment.sort(key=lambda p: p[0])
+    # Start with the first segment
+    # Decide initial direction arbitrarily (e.g., min X to max X)
+    first_segment = sorted(intersected_segments[0], key=lambda p: p[0])
+    current_path.extend(first_segment)
+    
+    remaining_segments = intersected_segments[1:]
+
+    while remaining_segments:
+        last_point = current_path[-1]
         
-        # Determine segment direction based on index (alternating)
-        if i % 2 == 0:  # Even index: left to right
-            ordered_segment = segment
-        else:  # Odd index: right to left
-            ordered_segment = segment[::-1]
-
-        if not current_path:
-            # Start a new path
-            current_path.extend(ordered_segment)
-        else:
-            # Check connection validity
-            prev_end_point = current_path[-1]
-            current_start_point = ordered_segment[0]
+        # Find the closest segment endpoint among remaining segments
+        best_match = None
+        min_dist_sq = float('inf')
+        best_segment_index = -1
+        
+        for i, segment in enumerate(remaining_segments):
+            p1, p2 = segment[0], segment[-1] # Endpoints of the candidate segment
             
-            # Calculate squared distance for connection
-            dx = prev_end_point[0] - current_start_point[0]
-            dy = prev_end_point[1] - current_start_point[1]
-            dist_sq = dx*dx + dy*dy
+            # Calculate squared distances from last_point to both endpoints
+            dist_sq1 = (last_point[0] - p1[0])**2 + (last_point[1] - p1[1])**2
+            dist_sq2 = (last_point[0] - p2[0])**2 + (last_point[1] - p2[1])**2
+            
+            # Check if the closer endpoint is within the threshold
+            if dist_sq1 < connection_threshold_sq and dist_sq1 < min_dist_sq:
+                min_dist_sq = dist_sq1
+                # Connect to p1, segment goes from p1 to p2
+                best_match = (p1, p2) 
+                best_segment_index = i
+                
+            if dist_sq2 < connection_threshold_sq and dist_sq2 < min_dist_sq:
+                min_dist_sq = dist_sq2
+                # Connect to p2, segment goes from p2 to p1
+                best_match = (p2, p1)
+                best_segment_index = i
 
-            if dist_sq < connection_threshold_sq:
-                # Connect segment to current path
-                current_path.append(current_start_point) # Add connection point
-                current_path.extend(ordered_segment[1:]) # Add rest of segment points
+        if best_match:
+            # Found a connectable segment
+            entry_point, exit_point = best_match
+            
+            # Add the connection (entry point might be same as last_point, that's ok)
+            # Only add if it's truly different to avoid duplicate points if connection is perfect
+            # if entry_point != last_point: # This check might be too strict, let optimizer handle duplicates
+            current_path.append(entry_point)
+            current_path.append(exit_point)
+            
+            # Remove the used segment from remaining_segments
+            remaining_segments.pop(best_segment_index)
+        else:
+            # Cannot connect further, finalize current path
+            if current_path:
+                final_paths.append(current_path)
+            
+            # Start a new path with the next available segment
+            if remaining_segments:
+                 # Decide initial direction arbitrarily (e.g., min X to max X)
+                next_segment = sorted(remaining_segments[0], key=lambda p: p[0])
+                current_path = list(next_segment)
+                remaining_segments.pop(0)
             else:
-                # Connection distance too large, finalize current path and start new one
-                if current_path:
-                    final_paths.append(current_path)
-                current_path = list(ordered_segment) # Start new path
+                 # No more segments left
+                 current_path = [] # Ensure loop terminates
 
-    # Add the last path if it exists
+    # Add the last constructed path
     if current_path:
         final_paths.append(current_path)
 
