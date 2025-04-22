@@ -2,7 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, LineString, Point, LinearRing, MultiPolygon # Added MultiPolygon
+# Use a specific cap style constant
+from shapely.geometry import Polygon, LineString, Point, LinearRing, MultiPolygon, CAP_STYLE 
 from shapely.ops import unary_union
 from shapely.affinity import scale, translate
 from matplotlib.collections import LineCollection # Import moved here as it's used by visualize_fill_path
@@ -131,13 +132,15 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
             print(f"  Generated contour part with {len(contour_path)} points.")
         else:
             print("  WARNING: Failed to generate contour part.")
+            # If contour fails, should we fill the whole area with zigzag?
+            # For now, we proceed, and _detect_unfilled_regions will likely find the whole area.
 
-        # 2. Detect unfilled regions
-        unfilled_regions = _detect_unfilled_regions(polygon, last_inner_polygon)
+        # 2. Detect unfilled regions based on the generated contour path
+        unfilled_regions = _detect_unfilled_regions(polygon, contour_path, toolpath_width)
         unfilled_regions_for_viz = unfilled_regions # Save for visualization
-        print(f"  Detected {len(unfilled_regions)} unfilled region(s).")
+        print(f"  Detected {len(unfilled_regions)} unfilled region(s) not covered by contour path.")
 
-        # 3. Generate zigzag fill for unfilled regions
+        # 3. Generate zigzag fill for detected unfilled regions
         total_zigzag_points = 0
         for i, region in enumerate(unfilled_regions):
             print(f"    Generating zigzag fill for unfilled region {i+1}...")
@@ -171,31 +174,57 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
 
 # --- Internal Helper Functions ---
 
-def _detect_unfilled_regions(original_polygon, inner_boundary_polygon):
+def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
     """
-    Calculates the region(s) between the original polygon and the inner boundary.
+    Calculates the region(s) within the original polygon (excluding holes) 
+    that are not covered by the contour toolpath.
 
     Args:
         original_polygon (Polygon): The initial polygon for the layer slice.
-        inner_boundary_polygon (Polygon | None): The innermost polygon reached by contour filling.
+        contour_path (list[tuple]): The list of points representing the contour fill path.
+        toolpath_width (float): The width of the toolpath.
 
     Returns:
         list[Polygon]: A list of polygons representing the unfilled areas.
-                       Returns an empty list if inner_boundary is None or invalid.
     """
     unfilled = []
-    if inner_boundary_polygon is None or not inner_boundary_polygon.is_valid or inner_boundary_polygon.is_empty:
-        # If no inner boundary, the whole original polygon might be considered unfilled 
-        # (or contour fill failed), but for zigzag fill, let's return empty for now.
-        # Alternatively, could return [original_polygon] if contour path was empty.
-        print("  No valid inner boundary polygon provided for difference calculation.")
+    if not original_polygon.is_valid or original_polygon.is_empty:
+        print("  Original polygon invalid or empty for unfilled region detection.")
         return []
 
+    if not contour_path or len(contour_path) < 2:
+        print("  No valid contour path provided; considering entire polygon (minus holes) as unfilled.")
+        # If the original polygon is simple (no holes), return it directly.
+        # If it has holes, the difference calculation below handles it implicitly.
+        # However, returning the original directly might be faster if no path exists.
+        if not original_polygon.interiors:
+             return [original_polygon]
+        else:
+             # Proceed with difference calculation against an empty geometry
+             contour_coverage_area = Polygon() 
+    else:
+        try:
+            # Create area covered by contour path
+            path_line = LineString(contour_path)
+            # Buffer the line by half the toolpath width on each side
+            # Use CAP_STYLE.flat to prevent rounded ends from over-covering
+            contour_coverage_area = path_line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat)
+            
+            if not contour_coverage_area.is_valid:
+                 print("  Warning: Contour coverage area is invalid, attempting fix.")
+                 contour_coverage_area = make_valid(contour_coverage_area)
+                 # contour_coverage_area = contour_coverage_area.buffer(0) # Older shapely
+
+        except Exception as e:
+            print(f"  Error creating contour coverage area: {e}")
+            return [] # Cannot determine unfilled regions
+
     try:
-        # Calculate the difference: Original - Inner = Unfilled Area
-        difference = original_polygon.difference(inner_boundary_polygon)
+        # Calculate the difference: Original Polygon - Contour Coverage = Unfilled Area
+        # This automatically respects holes in the original_polygon
+        difference = original_polygon.difference(contour_coverage_area)
         
-        # Ensure the result is valid
+        # Ensure the resulting difference is valid
         if not difference.is_valid:
             difference = make_valid(difference) # Requires shapely >= 1.8
             # difference = difference.buffer(0) # Older shapely versions
@@ -205,14 +234,20 @@ def _detect_unfilled_regions(original_polygon, inner_boundary_polygon):
         elif isinstance(difference, Polygon):
             unfilled.append(difference)
         elif isinstance(difference, MultiPolygon):
-            unfilled.extend(list(difference.geoms))
+            # Add only valid polygons from the MultiPolygon
+            for poly in difference.geoms:
+                if isinstance(poly, Polygon) and poly.is_valid and not poly.is_empty:
+                    unfilled.append(poly)
         else:
             print(f"  Difference calculation resulted in unexpected type: {difference.geom_type}")
             
     except Exception as e:
         print(f"  Error calculating difference for unfilled regions: {e}")
 
-    return unfilled
+    # Final check for validity just in case
+    valid_unfilled = [p for p in unfilled if p.is_valid and not p.is_empty and p.area > 1e-6]
+    
+    return valid_unfilled
 
 
 # --- Visualization Utility ---
@@ -258,27 +293,30 @@ def visualize_fill_path(polygon, path, title="Continuous Fill Path", unfilled_re
                     ax.fill(x_int, y_int, alpha=1.0, fc='white', ec='orange', linewidth=1, linestyle='--') # Punch holes visually
 
     # Determine if we have a single path or a list of paths
-    # Handle cases: empty list, list with one path, list with multiple paths
-    is_list_of_paths = False
+    # The input 'path' can be:
+    # - An empty list: []
+    # - A single path: [(x,y), (x,y), ...]  (from contour)
+    # - A list of paths: [[(x,y), ...], [(x,y), ...]] (from zigzag or hybrid)
+    
+    paths_to_plot = []
     if path:
         # Check if the first element is a list (of coordinates) or a tuple (coordinate)
-        # This distinguishes between list[list[tuple]] and list[tuple]
         if isinstance(path[0], list):
-             is_list_of_paths = True
+            # It's already a list of paths (zigzag or hybrid)
+            paths_to_plot = path
         elif isinstance(path[0], tuple):
-             # It's a single path (list of tuples), treat as list containing one path
-             path = [path] # Wrap the single path in a list for consistent processing below
-             is_list_of_paths = True # Now it is technically a list of paths (albeit one)
-        # If path[0] is neither list nor tuple, something is wrong, but proceed assuming list of paths
+            # It's a single path (contour), wrap it in a list for consistent processing
+            paths_to_plot = [path] 
+        # Add more robust checks if needed for malformed data
 
     # Plot the fill path(s)
-    if path and is_list_of_paths: # Now always process as list of paths
-            print(f"  Visualizing {len(path)} path(s)...")
+    if paths_to_plot: 
+            print(f"  Visualizing {len(paths_to_plot)} path(s)...")
             all_segments = []
             start_points = []
             end_points = []
             total_points = 0
-            for single_path in path: # Iterate through the list of paths
+            for single_path in paths_to_plot: # Iterate through the list of paths
                 if len(single_path) > 1:
                     path_x, path_y = zip(*single_path)
                     points = np.array([path_x, path_y]).T.reshape(-1, 1, 2)
