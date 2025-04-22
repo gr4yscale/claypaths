@@ -164,10 +164,10 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
         print(f"ERROR: Unknown region fill algorithm specified in config: {algorithm}")
         return [] # Return empty list/path for unknown algorithm
 
-    # Visualize the result (passing unfilled regions if generated)
-    visualize_fill_path(polygon, fill_result, 
-                        title=f"Fill Path(s) - Algorithm: {algorithm}", 
-                        unfilled_regions=unfilled_regions_for_viz)
+    # Visualization is now handled in main.py after perimeters are also generated
+    # visualize_fill_path(polygon, fill_result, 
+    #                     title=f"Fill Path(s) - Algorithm: {algorithm}", 
+    #                     unfilled_regions=unfilled_regions_for_viz)
 
     return fill_result
 
