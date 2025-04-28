@@ -15,7 +15,7 @@ from src.config import get_config # Import config getter
 from shapely.validation import make_valid
 
 from src.config import get_config # Import config getter
-from src.fill_smooth_contour import generate_smooth_contour_fill # Import contour fill
+from src.fill_smooth_contour import generate_smooth_contour_fill, generate_enhanced_contour_fill, _detect_unfilled_regions
 from src.fill_zigzag import generate_zigzag_fill # Import zigzag fill
 from src.fill_fermat_spiral import generate_fermat_spiral_fill # Import Fermat spiral fill
 from src.fill_hilbert import generate_hilbert_fill # Import Hilbert fill
@@ -195,84 +195,6 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
     #                     unfilled_regions=unfilled_regions_for_viz)
 
     return fill_result
-
-
-# --- Internal Helper Functions ---
-
-def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
-    """
-    Calculates the region(s) within the original polygon (excluding holes) 
-    that are not covered by the contour toolpath.
-
-    Args:
-        original_polygon (Polygon): The initial polygon for the layer slice.
-        contour_path (list[tuple]): The list of points representing the contour fill path.
-        toolpath_width (float): The width of the toolpath.
-
-    Returns:
-        list[Polygon]: A list of polygons representing the unfilled areas.
-    """
-    unfilled = []
-    if not original_polygon.is_valid or original_polygon.is_empty:
-        print("  Original polygon invalid or empty for unfilled region detection.")
-        return []
-
-    if not contour_path or len(contour_path) < 2:
-        print("  No valid contour path provided; considering entire polygon (minus holes) as unfilled.")
-        # If the original polygon is simple (no holes), return it directly.
-        # If it has holes, the difference calculation below handles it implicitly.
-        # However, returning the original directly might be faster if no path exists.
-        if not original_polygon.interiors:
-             return [original_polygon]
-        else:
-             # Proceed with difference calculation against an empty geometry
-             contour_coverage_area = Polygon() 
-    else:
-        try:
-            # Create area covered by contour path
-            path_line = LineString(contour_path)
-            # Buffer the line by half the toolpath width on each side
-            # Use CAP_STYLE.flat to prevent rounded ends from over-covering
-            contour_coverage_area = path_line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat)
-            
-            if not contour_coverage_area.is_valid:
-                 print("  Warning: Contour coverage area is invalid, attempting fix.")
-                 contour_coverage_area = make_valid(contour_coverage_area)
-                 # contour_coverage_area = contour_coverage_area.buffer(0) # Older shapely
-
-        except Exception as e:
-            print(f"  Error creating contour coverage area: {e}")
-            return [] # Cannot determine unfilled regions
-
-    try:
-        # Calculate the difference: Original Polygon - Contour Coverage = Unfilled Area
-        # This automatically respects holes in the original_polygon
-        difference = original_polygon.difference(contour_coverage_area)
-        
-        # Ensure the resulting difference is valid
-        if not difference.is_valid:
-            difference = make_valid(difference) # Requires shapely >= 1.8
-            # difference = difference.buffer(0) # Older shapely versions
-
-        if difference.is_empty:
-            print("  Difference calculation resulted in empty geometry.")
-        elif isinstance(difference, Polygon):
-            unfilled.append(difference)
-        elif isinstance(difference, MultiPolygon):
-            # Add only valid polygons from the MultiPolygon
-            for poly in difference.geoms:
-                if isinstance(poly, Polygon) and poly.is_valid and not poly.is_empty:
-                    unfilled.append(poly)
-        else:
-            print(f"  Difference calculation resulted in unexpected type: {difference.geom_type}")
-            
-    except Exception as e:
-        print(f"  Error calculating difference for unfilled regions: {e}")
-
-    # Final check for validity just in case
-    valid_unfilled = [p for p in unfilled if p.is_valid and not p.is_empty and p.area > 1e-6]
-    
-    return valid_unfilled
 
 
 # --- Visualization Utility ---

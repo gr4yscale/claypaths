@@ -2,6 +2,7 @@ import numpy as np
 from shapely.geometry import Polygon, MultiPolygon, Point, LinearRing # Added Point, LinearRing
 from shapely.ops import unary_union
 from src.config import get_config
+# Removed import of _detect_unfilled_regions from region_fill
 # Removed: from src.region_fill import connect_contours
 
 def generate_smooth_contour_fill(polygon, toolpath_width):
@@ -105,8 +106,144 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
     # Return the path and the final inner polygon
     # Return None for the polygon if the buffer failed early or area was too small initially
     last_inner_polygon = current_polygon if current_polygon.area > 1e-6 else None
-    
+
     return path, last_inner_polygon
+
+
+# --- Internal Helper Function (Moved from region_fill.py) ---
+
+def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
+    """
+    Calculates the region(s) within the original polygon (excluding holes) 
+    that are not covered by the contour toolpath.
+
+    Args:
+        original_polygon (Polygon): The initial polygon for the layer slice.
+        contour_path (list[tuple]): The list of points representing the contour fill path.
+        toolpath_width (float): The width of the toolpath.
+
+    Returns:
+        list[Polygon]: A list of polygons representing the unfilled areas.
+    """
+    unfilled = []
+    if not original_polygon.is_valid or original_polygon.is_empty:
+        print("  Original polygon invalid or empty for unfilled region detection.")
+        return []
+
+    if not contour_path or len(contour_path) < 2:
+        print("  No valid contour path provided; considering entire polygon (minus holes) as unfilled.")
+        # If the original polygon is simple (no holes), return it directly.
+        # If it has holes, the difference calculation below handles it implicitly.
+        # However, returning the original directly might be faster if no path exists.
+        if not original_polygon.interiors:
+             return [original_polygon]
+        else:
+             # Proceed with difference calculation against an empty geometry
+             contour_coverage_area = Polygon() 
+    else:
+        try:
+            # Create area covered by contour path
+            path_line = LineString(contour_path)
+            # Buffer the line by half the toolpath width on each side
+            # Use CAP_STYLE.flat to prevent rounded ends from over-covering
+            contour_coverage_area = path_line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat)
+            
+            if not contour_coverage_area.is_valid:
+                 print("  Warning: Contour coverage area is invalid, attempting fix.")
+                 contour_coverage_area = make_valid(contour_coverage_area)
+                 # contour_coverage_area = contour_coverage_area.buffer(0) # Older shapely
+
+        except Exception as e:
+            print(f"  Error creating contour coverage area: {e}")
+            return [] # Cannot determine unfilled regions
+
+    try:
+        # Calculate the difference: Original Polygon - Contour Coverage = Unfilled Area
+        # This automatically respects holes in the original_polygon
+        difference = original_polygon.difference(contour_coverage_area)
+        
+        # Ensure the resulting difference is valid
+        if not difference.is_valid:
+            difference = make_valid(difference) # Requires shapely >= 1.8
+            # difference = difference.buffer(0) # Older shapely versions
+
+        if difference.is_empty:
+            print("  Difference calculation resulted in empty geometry.")
+        elif isinstance(difference, Polygon):
+            unfilled.append(difference)
+        elif isinstance(difference, MultiPolygon):
+            # Add only valid polygons from the MultiPolygon
+            for poly in difference.geoms:
+                if isinstance(poly, Polygon) and poly.is_valid and not poly.is_empty:
+                    unfilled.append(poly)
+        else:
+            print(f"  Difference calculation resulted in unexpected type: {difference.geom_type}")
+            
+    except Exception as e:
+        print(f"  Error calculating difference for unfilled regions: {e}")
+
+    # Final check for validity just in case
+    valid_unfilled = [p for p in unfilled if p.is_valid and not p.is_empty and p.area > 1e-6]
+    
+    return valid_unfilled
+
+
+# --- Enhanced Contour Fill ---
+
+def generate_enhanced_contour_fill(polygon, toolpath_width):
+    """
+    Generates a fill pattern using inward contours, and then fills any remaining
+    unfilled regions with additional local contour paths.
+
+    Args:
+        polygon (shapely.geometry.Polygon): The polygon to fill.
+        toolpath_width (float): Width of the toolpath.
+
+    Returns:
+        list[list[tuple]]: A list containing:
+            - The main continuous contour path (if generated).
+            - Additional paths for locally filled regions (if any).
+            Returns an empty list if generation fails.
+    """
+    all_paths = []
+
+    # 1. Generate the main contour fill path
+    print("  Generating main contour path...")
+    main_contour_path, _ = generate_smooth_contour_fill(polygon, toolpath_width)
+
+    if main_contour_path:
+        all_paths.append(main_contour_path)
+        print(f"    Generated main contour path with {len(main_contour_path)} points.")
+    else:
+        print("    WARNING: Failed to generate main contour path.")
+        # If the main contour fails, the entire polygon is considered unfilled.
+
+    # 2. Detect unfilled regions based on the generated main contour path
+    #    (or the original polygon if the main path failed)
+    print("  Detecting unfilled regions...")
+    unfilled_regions = _detect_unfilled_regions(polygon, main_contour_path, toolpath_width)
+    print(f"    Detected {len(unfilled_regions)} unfilled region(s).")
+
+    # 3. Generate contour fill for each detected unfilled region
+    total_local_points = 0
+    for i, region in enumerate(unfilled_regions):
+        print(f"    Generating local contour fill for unfilled region {i+1} (Area: {region.area:.2f})...")
+        # Recursively call the standard contour fill for the small region
+        local_path, _ = generate_smooth_contour_fill(region, toolpath_width)
+
+        if local_path:
+            num_local_points = len(local_path)
+            print(f"      Generated local path with {num_local_points} points.")
+            all_paths.append(local_path) # Add the local path to the list
+            total_local_points += num_local_points
+        else:
+            print(f"      WARNING: Failed to generate local contour fill for region {i+1}.")
+
+    total_points = sum(len(p) for p in all_paths)
+    print(f"  Enhanced contour fill finished. Generated {len(all_paths)} total path(s) with {total_points} total points.")
+
+    return all_paths
+
 
 # --- Contour Connection Logic (Moved from region_fill.py) ---
 
