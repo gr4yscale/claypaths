@@ -1,5 +1,5 @@
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import Point, LineString, Polygon # Added LineString and Polygon
 import matplotlib.pyplot as plt
 import subprocess
 import os
@@ -64,8 +64,9 @@ class ToolpathOptimizer:
             
             # Optimize the ordering of curves within this layer
             if layer_curves:
-                optimized_layer_path = self._optimize_layer(layer_curves, prev_end_point)
-                
+                # Pass the actual layer polygons for intersection checks
+                optimized_layer_path = self._optimize_layer(layer_curves, layer, prev_end_point)
+
                 # Smooth the optimized path for uniform point spacing
                 smoothed_path = self.smooth_path(optimized_layer_path)
                 optimized_paths.append(smoothed_path)
@@ -113,17 +114,18 @@ class ToolpathOptimizer:
                 segments.append(segment)
         
         return segments
-    
-    def _optimize_layer(self, curves, prev_end_point=None):
+
+    def _optimize_layer(self, curves, layer_polygons, prev_end_point=None):
         """
-        Optimize the ordering of curves within a layer using TSP.
-        
+        Optimize the ordering of curves within a layer using TSP, avoiding hole intersections.
+
         Args:
-            curves (list): List of curves, where each curve is a list of points
-            prev_end_point (tuple): The end point of the previous layer's path
-            
+            curves (list): List of curves, where each curve is a list of points.
+            layer_polygons (list): List of Shapely Polygons for the current layer.
+            prev_end_point (tuple, optional): End point of the previous layer's path.
+
         Returns:
-            list: Optimized path for the layer
+            list: Optimized path for the layer (before smoothing).
         """
         if not curves:
             return []
@@ -166,13 +168,18 @@ class ToolpathOptimizer:
                         d1 = self._euclidean_distance(end_i, start_j)  # i forward -> j forward
                         d2 = self._euclidean_distance(end_i, end_j)    # i forward -> j backward
                         d3 = self._euclidean_distance(start_i, start_j) # i backward -> j forward
-                        d4 = self._euclidean_distance(start_i, end_j)   # i backward -> j backward
-                        
-                        # Use the minimum distance
+                        # Check for intersections with holes for each potential connection
+                        d1 = self._calculate_connection_cost(end_i, start_j, layer_polygons)   # i forward -> j forward
+                        d2 = self._calculate_connection_cost(end_i, end_j, layer_polygons)     # i forward -> j backward
+                        d3 = self._calculate_connection_cost(start_i, start_j, layer_polygons)  # i backward -> j forward
+                        d4 = self._calculate_connection_cost(start_i, end_j, layer_polygons)    # i backward -> j backward
+
+                        # Use the minimum valid distance
                         distance_matrix[i, j] = min(d1, d2, d3, d4)
-            
+
             # Scale the distance matrix to avoid "edge too long" errors
             # Concorde has limits on edge lengths, so we'll scale to a reasonable range
+            # Note: Scaling infinity might cause issues, handle large numbers carefully
             config = get_config()
             tsp_scale_factor = config['tsp_scale_factor']
             
@@ -183,12 +190,30 @@ class ToolpathOptimizer:
                 scale_factor = tsp_scale_factor
                 
             print(f"  Scaling distances by factor {scale_factor:.2f}")
-            
-            # Write the distance matrix to the TSP file
+            # Write the scaled distance matrix to the TSP file, handling potential infinities
+            max_finite_dist = 0
             for i in range(num_curves):
-                row = " ".join([str(int(distance_matrix[i, j] * scale_factor)) for j in range(num_curves)])
+                 for j in range(num_curves):
+                      if i != j and np.isfinite(distance_matrix[i, j]):
+                           max_finite_dist = max(max_finite_dist, distance_matrix[i, j])
+
+            # Define a large integer representation for infinity
+            # Ensure it's within Concorde's typical limits (e.g., < 2^31)
+            large_int_penalty = int(max(1, max_finite_dist * scale_factor * 100)) # Significantly larger than other costs
+            large_int_penalty = min(large_int_penalty, 2**30) # Cap it
+
+            for i in range(num_curves):
+                row_values = []
+                for j in range(num_curves):
+                    cost = distance_matrix[i, j]
+                    if np.isinf(cost):
+                        scaled_cost = large_int_penalty
+                    else:
+                        scaled_cost = int(cost * scale_factor)
+                    row_values.append(str(scaled_cost))
+                row = " ".join(row_values)
                 tsp_file.write(f"{row}\n".encode())
-            
+
             tsp_file.write(f"EOF\n".encode())
         
         # Get the preferred optimization method from config
@@ -196,9 +221,10 @@ class ToolpathOptimizer:
         optimization_method = config.get('optimization_method', 'greedy')
         
         # Use the specified optimization method
+        # Pass layer_polygons to greedy if used
         if optimization_method.lower() == 'greedy':
             print("  Using greedy TSP optimization method")
-            tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
+            tsp_tour = self._greedy_tsp(distance_matrix, layer_polygons, prev_end_point, endpoints)
         else:  # Default to Concorde
             try:
                 # Try to run Concorde
@@ -208,12 +234,12 @@ class ToolpathOptimizer:
                 if not tsp_tour:
                     # Fall back to greedy approach
                     print("  Concorde failed, falling back to greedy approach")
-                    tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
+                    tsp_tour = self._greedy_tsp(distance_matrix, layer_polygons, prev_end_point, endpoints)
             except Exception as e:
                 print(f"  Error running TSP solver: {e}")
                 # Fall back to greedy approach
-                tsp_tour = self._greedy_tsp(distance_matrix, prev_end_point, endpoints)
-        
+                tsp_tour = self._greedy_tsp(distance_matrix, layer_polygons, prev_end_point, endpoints)
+
         # Clean up the temporary file
         try:
             os.remove(tsp_filename)
@@ -225,19 +251,19 @@ class ToolpathOptimizer:
         
         # If we have a previous end point, find the best starting curve and direction
         if prev_end_point:
-            # Find the best starting curve and direction
+            # Find the best starting curve and direction, considering hole intersections
             best_start_idx = 0
             best_start_cost = float('inf')
             best_start_reverse = False
-            
+
             for i in range(len(tsp_tour)):
                 curve_idx = tsp_tour[i]
                 start, end = endpoints[curve_idx]
-                
-                # Calculate cost to start from this curve
-                cost_forward = self._euclidean_distance(prev_end_point, start)
-                cost_backward = self._euclidean_distance(prev_end_point, end)
-                
+
+                # Calculate cost to start from this curve, penalizing intersections
+                cost_forward = self._calculate_connection_cost(prev_end_point, start, layer_polygons)
+                cost_backward = self._calculate_connection_cost(prev_end_point, end, layer_polygons)
+
                 if cost_forward < best_start_cost:
                     best_start_idx = i
                     best_start_cost = cost_forward
@@ -261,20 +287,30 @@ class ToolpathOptimizer:
             curve = curves[curve_idx]
             start, end = endpoints[curve_idx]
             
-            # Determine whether to traverse the curve forward or backward
+            # Determine whether to traverse the curve forward or backward, considering intersections
             reverse = False
-            
+            connection_cost = 0.0
+
             if prev_point:
-                # Calculate costs for both directions
-                cost_forward = self._euclidean_distance(prev_point, start)
-                cost_backward = self._euclidean_distance(prev_point, end)
-                
+                # Calculate costs for both directions, penalizing intersections
+                cost_forward = self._calculate_connection_cost(prev_point, start, layer_polygons)
+                cost_backward = self._calculate_connection_cost(prev_point, end, layer_polygons)
+
                 # Choose the direction with the lower cost
-                reverse = cost_backward < cost_forward
-                
-                # Add the travel cost
-                self.total_cost += min(cost_forward, cost_backward)
-            
+                if cost_backward < cost_forward:
+                    reverse = True
+                    connection_cost = cost_backward
+                else:
+                    reverse = False
+                    connection_cost = cost_forward
+
+                # Add the travel cost (only if finite)
+                if np.isfinite(connection_cost):
+                     self.total_cost += connection_cost
+                else:
+                     # This should ideally not happen if TSP worked correctly, but log if it does
+                     print(f"  Warning: Infinite cost connection selected between curves {tsp_tour[i-1]} and {curve_idx}")
+
             # Add the curve to the optimized path
             if reverse:
                 # Add the curve in reverse order
@@ -379,18 +415,19 @@ class ToolpathOptimizer:
         except Exception as e:
             print(f"  Error running Concorde: {e}")
             return None
-    
-    def _greedy_tsp(self, distance_matrix, prev_end_point=None, endpoints=None):
+
+    def _greedy_tsp(self, distance_matrix, layer_polygons, prev_end_point=None, endpoints=None):
         """
-        Solve the TSP problem using a greedy approach.
-        
+        Solve the TSP problem using a greedy approach, avoiding hole intersections.
+
         Args:
-            distance_matrix (numpy.ndarray): Distance matrix
-            prev_end_point (tuple): The end point of the previous layer's path
-            endpoints (list): List of (start, end) points for each curve
-            
+            distance_matrix (numpy.ndarray): Pre-calculated distance matrix (with penalties).
+            layer_polygons (list): List of Shapely Polygons for the layer.
+            prev_end_point (tuple, optional): End point of the previous layer's path.
+            endpoints (list, optional): List of (start, end) points for each curve.
+
         Returns:
-            list: Tour as a list of indices
+            list: Tour as a list of indices.
         """
         num_nodes = distance_matrix.shape[0]
         
@@ -398,22 +435,28 @@ class ToolpathOptimizer:
         if prev_end_point and endpoints:
             start_node = 0
             min_dist = float('inf')
-            
+
             for i in range(num_nodes):
                 start, end = endpoints[i]
-                
-                dist_to_start = self._euclidean_distance(prev_end_point, start)
-                dist_to_end = self._euclidean_distance(prev_end_point, end)
-                
+
+                # Calculate connection cost, considering intersections
+                dist_to_start = self._calculate_connection_cost(prev_end_point, start, layer_polygons)
+                dist_to_end = self._calculate_connection_cost(prev_end_point, end, layer_polygons)
+
                 if dist_to_start < min_dist:
                     min_dist = dist_to_start
                     start_node = i
-                
+
                 if dist_to_end < min_dist:
                     min_dist = dist_to_end
                     start_node = i
+
+            if np.isinf(min_dist):
+                 print("  Warning (Greedy TSP): All starting connections intersect holes. Choosing node 0.")
+                 start_node = 0 # Fallback if all connections are bad
+
         else:
-            # Start from node 0
+            # Start from node 0 if no previous point
             start_node = 0
         
         # Initialize the tour with the starting node
@@ -424,26 +467,98 @@ class ToolpathOptimizer:
         # Greedily build the tour
         while unvisited:
             current = tour[-1]
-            next_node = min(unvisited, key=lambda x: distance_matrix[current, x])
-            tour.append(next_node)
-            unvisited.remove(next_node)
-        
+            # Find the nearest unvisited node using the pre-calculated (penalized) distance matrix
+            best_next_node = -1
+            min_dist = float('inf')
+
+            # Iterate through unvisited nodes to find the minimum valid distance
+            possible_next_nodes = list(unvisited)
+            np.random.shuffle(possible_next_nodes) # Add randomness if multiple nodes have same min dist
+
+            for node in possible_next_nodes:
+                 dist = distance_matrix[current, node]
+                 if dist < min_dist:
+                      min_dist = dist
+                      best_next_node = node
+
+            if best_next_node == -1 or np.isinf(min_dist):
+                 print(f"  Warning (Greedy TSP): Cannot find valid next node from {current}. Stopping tour early.")
+                 # This might happen if 'current' is isolated due to hole intersections
+                 break # Stop the tour here
+
+            tour.append(best_next_node)
+            unvisited.remove(best_next_node)
+
         return tour
-    
-    
+
+    def _check_intersection(self, p1, p2, layer_polygons):
+        """
+        Check if the line segment between p1 and p2 intersects any hole
+        in the provided layer polygons.
+
+        Args:
+            p1 (tuple): Start point (x, y).
+            p2 (tuple): End point (x, y).
+            layer_polygons (list): List of Shapely Polygons for the layer.
+
+        Returns:
+            bool: True if the segment intersects a hole, False otherwise.
+        """
+        if not layer_polygons or p1 is None or p2 is None:
+            return False # Cannot check intersection
+
+        segment = LineString([p1, p2])
+
+        for poly in layer_polygons:
+            if isinstance(poly, Polygon): # Ensure it's a Polygon
+                for interior in poly.interiors:
+                    # Check if the segment intersects the boundary of the hole
+                    if segment.intersects(interior):
+                        # Optional: Add a small buffer check to avoid issues with points exactly on boundary
+                        # if segment.buffer(1e-6).intersects(interior):
+                        # print(f"    Intersection detected: Segment {p1} -> {p2} crosses hole.")
+                        return True
+        return False
+
+    def _calculate_connection_cost(self, p1, p2, layer_polygons):
+        """
+        Calculate the cost of connecting p1 to p2, returning infinity
+        if the connection intersects a hole.
+
+        Args:
+            p1 (tuple): Start point (x, y).
+            p2 (tuple): End point (x, y).
+            layer_polygons (list): List of Shapely Polygons for the layer.
+
+        Returns:
+            float: Euclidean distance or float('inf') if intersection occurs.
+        """
+        if self._check_intersection(p1, p2, layer_polygons):
+            return float('inf')
+        else:
+            return self._euclidean_distance(p1, p2)
+
     def _euclidean_distance(self, p1, p2):
         """
-        Calculate the Euclidean distance between two points.
+        Calculate the Euclidean distance between two points. Handles None inputs.
         
         Args:
             p1 (tuple): First point (x, y)
             p2 (tuple): Second point (x, y)
             
         Returns:
-            float: Euclidean distance
+            float: Euclidean distance, or 0.0 if points are identical or invalid.
         """
-        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-        
+        if p1 is None or p2 is None:
+             return 0.0 # Or perhaps float('inf') depending on context? Returning 0 for now.
+        if p1 == p2:
+             return 0.0
+        try:
+            return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        except (TypeError, IndexError):
+             print(f"  Warning: Invalid points for distance calculation: {p1}, {p2}")
+             return float('inf') # Penalize invalid points heavily
+
     def smooth_path(self, path, segment_length=None):
         """
         Smooth a path by resampling it with uniform point spacing.
