@@ -67,10 +67,13 @@ class ToolpathOptimizer:
                 # Pass the actual layer polygons for intersection checks
                 optimized_layer_path = self._optimize_layer(layer_curves, layer, prev_end_point)
 
-                # Smooth the optimized path for uniform point spacing
-                smoothed_path = self.smooth_path(optimized_layer_path)
+                # Smooth the optimized path, passing polygons for intersection checks
+                smoothed_path = self.smooth_path(optimized_layer_path, layer_polygons=layer)
                 optimized_paths.append(smoothed_path)
-                
+
+                # Check for self-intersection in the final smoothed path
+                self._check_self_intersection(smoothed_path, i + 1)
+
                 # Update the previous end point for the next layer
                 if smoothed_path:
                     prev_end_point = smoothed_path[-1]
@@ -172,10 +175,28 @@ class ToolpathOptimizer:
                         d1 = self._calculate_connection_cost(end_i, start_j, layer_polygons)   # i forward -> j forward
                         d2 = self._calculate_connection_cost(end_i, end_j, layer_polygons)     # i forward -> j backward
                         d3 = self._calculate_connection_cost(start_i, start_j, layer_polygons)  # i backward -> j forward
-                        d4 = self._calculate_connection_cost(start_i, end_j, layer_polygons)    # i backward -> j backward
+                        connections = [
+                            self._calculate_connection_cost(end_i, start_j, layer_polygons),   # 0: i forward -> j forward
+                            self._calculate_connection_cost(end_i, end_j, layer_polygons),     # 1: i forward -> j backward
+                            self._calculate_connection_cost(start_i, start_j, layer_polygons),  # 2: i backward -> j forward
+                            self._calculate_connection_cost(start_i, end_j, layer_polygons)     # 3: i backward -> j backward
+                        ]
 
-                        # Use the minimum valid distance
-                        distance_matrix[i, j] = min(d1, d2, d3, d4)
+                        # Find the connection with the minimum cost
+                        min_cost = float('inf')
+                        best_connection_info = None # Will store (cost, p1, p2)
+                        for cost, p1_conn, p2_conn in connections:
+                             if cost < min_cost:
+                                  min_cost = cost
+                                  best_connection_info = (cost, p1_conn, p2_conn)
+
+                        # Store the minimum cost in the distance matrix
+                        distance_matrix[i, j] = min_cost
+                        # We also need to store which connection was best for path reconstruction later
+                        # Let's use another matrix or dictionary for this.
+                        # For simplicity now, we'll recalculate the best connection when building the path.
+                        # TODO: Store best_connection_info efficiently if performance becomes an issue.
+
 
             # Scale the distance matrix to avoid "edge too long" errors
             # Concorde has limits on edge lengths, so we'll scale to a reasonable range
@@ -248,82 +269,158 @@ class ToolpathOptimizer:
         
         # Now we have the TSP tour, but we need to determine the direction for each curve
         optimized_path = []
-        
+        best_start_reverse = False # Initialize default direction
+
         # If we have a previous end point, find the best starting curve and direction
         if prev_end_point:
             # Find the best starting curve and direction, considering hole intersections
             best_start_idx = 0
             best_start_cost = float('inf')
             best_start_reverse = False
+            best_start_connection_points = (None, None) # Store (prev_end_point, actual_start_point)
 
             for i in range(len(tsp_tour)):
                 curve_idx = tsp_tour[i]
                 start, end = endpoints[curve_idx]
 
                 # Calculate cost to start from this curve, penalizing intersections
-                cost_forward = self._calculate_connection_cost(prev_end_point, start, layer_polygons)
-                cost_backward = self._calculate_connection_cost(prev_end_point, end, layer_polygons)
+                cost_forward, p1f, p2f = self._calculate_connection_cost(prev_end_point, start, layer_polygons)
+                cost_backward, p1b, p2b = self._calculate_connection_cost(prev_end_point, end, layer_polygons)
 
                 if cost_forward < best_start_cost:
                     best_start_idx = i
                     best_start_cost = cost_forward
                     best_start_reverse = False
-                
+                    best_start_connection_points = (p1f, p2f)
+
                 if cost_backward < best_start_cost:
                     best_start_idx = i
                     best_start_cost = cost_backward
                     best_start_reverse = True
-            
+                    best_start_connection_points = (p1b, p2b)
+
             # Reorder the tour to start from the best curve
             tsp_tour = tsp_tour[best_start_idx:] + tsp_tour[:best_start_idx]
-            
+
             # Add the cost of traveling from the previous layer
-            self.total_cost += best_start_cost
-        
+            if np.isfinite(best_start_cost):
+                 self.total_cost += best_start_cost
+                 # Add the initial connection segment if valid
+                 if best_start_connection_points[0] and best_start_connection_points[1]:
+                      # Add points between prev_end and actual start if needed (e.g., for smoothing)
+                      # For now, just ensure the start point is correct
+                      # optimized_path.append(best_start_connection_points[0]) # prev_end_point
+                      optimized_path.append(best_start_connection_points[1]) # actual start point
+            else:
+                 print(f"  Warning: Initial connection from previous layer has infinite cost.")
+                 # Decide how to handle this - maybe start path without connection?
+
         # Build the optimized path by connecting curves in the TSP tour order
-        prev_point = prev_end_point
-        
+        # Ensure the first point of the first curve is added correctly based on best_start_reverse
+        first_curve_idx = tsp_tour[0]
+        first_curve = curves[first_curve_idx]
+        if best_start_reverse:
+             # If starting reversed, the first point added should be the end of the first curve
+             if not optimized_path or optimized_path[-1] != first_curve[-1]:
+                  optimized_path.append(first_curve[-1])
+             prev_point = first_curve[-1] # The point we are starting *from* on the first curve
+        else:
+             # If starting forward, the first point added should be the start of the first curve
+             if not optimized_path or optimized_path[-1] != first_curve[0]:
+                  optimized_path.append(first_curve[0])
+             prev_point = first_curve[0] # The point we are starting *from* on the first curve
+
+
         for i, curve_idx in enumerate(tsp_tour):
             curve = curves[curve_idx]
             start, end = endpoints[curve_idx]
-            
-            # Determine whether to traverse the curve forward or backward, considering intersections
+
+            # Determine the connection to the *next* curve (if not the last one)
+            # And determine the traversal direction for the *current* curve
             reverse = False
             connection_cost = 0.0
+            connection_points = (None, None) # (from_point, to_point)
 
-            if prev_point:
-                # Calculate costs for both directions, penalizing intersections
-                cost_forward = self._calculate_connection_cost(prev_point, start, layer_polygons)
-                cost_backward = self._calculate_connection_cost(prev_point, end, layer_polygons)
+            # Calculate connection cost from the *current* curve's potential endpoints
+            # to the *next* curve's potential start points
+            if i < len(tsp_tour) - 1:
+                 next_curve_idx = tsp_tour[i+1]
+                 next_start, next_end = endpoints[next_curve_idx]
 
-                # Choose the direction with the lower cost
-                if cost_backward < cost_forward:
-                    reverse = True
-                    connection_cost = cost_backward
-                else:
-                    reverse = False
-                    connection_cost = cost_forward
+                 # Consider 4 connection possibilities (end -> next_start, end -> next_end, start -> next_start, start -> next_end)
+                 connections = [
+                      self._calculate_connection_cost(end, next_start, layer_polygons),   # 0: current forward -> next forward
+                      self._calculate_connection_cost(end, next_end, layer_polygons),     # 1: current forward -> next backward
+                      self._calculate_connection_cost(start, next_start, layer_polygons),  # 2: current backward -> next forward
+                      self._calculate_connection_cost(start, next_end, layer_polygons)     # 3: current backward -> next backward
+                 ]
 
-                # Add the travel cost (only if finite)
-                if np.isfinite(connection_cost):
-                     self.total_cost += connection_cost
-                else:
-                     # This should ideally not happen if TSP worked correctly, but log if it does
-                     print(f"  Warning: Infinite cost connection selected between curves {tsp_tour[i-1]} and {curve_idx}")
+                 min_cost = float('inf')
+                 best_conn_idx = -1
+                 for idx, (cost, p1_conn, p2_conn) in enumerate(connections):
+                      if cost < min_cost:
+                           min_cost = cost
+                           best_conn_idx = idx
+                           connection_points = (p1_conn, p2_conn) # Store the points for the best connection
 
-            # Add the curve to the optimized path
-            if reverse:
-                # Add the curve in reverse order
-                for point in reversed(curve):
-                    optimized_path.append(point)
-                prev_point = start
+                 connection_cost = min_cost
+                 # Determine reversal based on the best connection index
+                 # If best connection starts from 'start' (indices 2 or 3), current curve should be reversed
+                 reverse = best_conn_idx >= 2
+
+                 # Add the travel cost (only if finite)
+                 if np.isfinite(connection_cost):
+                      self.total_cost += connection_cost
+                 else:
+                      print(f"  Warning: Infinite cost connection selected between curves {curve_idx} and {next_curve_idx}")
+
             else:
-                # Add the curve in forward order
-                for point in curve:
-                    optimized_path.append(point)
-                prev_point = end
-        
-        return optimized_path
+                 # Last curve in the tour - determine direction based on connection from previous
+                 # This logic needs refinement - the direction of the last curve depends
+                 # on how the *previous* curve connected to *it*.
+                 # Let's recalculate based on prev_point connection to this curve's start/end
+                 cost_forward, _, _ = self._calculate_connection_cost(prev_point, start, layer_polygons)
+                 cost_backward, _, _ = self._calculate_connection_cost(prev_point, end, layer_polygons)
+                 reverse = cost_backward < cost_forward
+
+
+            # Add the points of the current curve
+            current_curve_points = list(reversed(curve)) if reverse else list(curve)
+
+            # Add the connection point (start of the curve) if it's not already the last point
+            if not optimized_path or optimized_path[-1] != current_curve_points[0]:
+                 # Add the connection segment points if needed (e.g., for visualization/smoothing)
+                 # For now, just add the start point of the curve segment
+                 optimized_path.append(current_curve_points[0])
+
+            # Add the rest of the curve points (excluding the first one already added)
+            optimized_path.extend(current_curve_points[1:])
+
+            # Update prev_point to the end of the traversed curve
+            prev_point = current_curve_points[-1]
+
+            # Add the connection segment to the next curve if applicable and valid
+            if i < len(tsp_tour) - 1 and connection_points[0] and connection_points[1] and np.isfinite(connection_cost):
+                 # Add points for the travel move if needed for smoothing/visualization
+                 # For now, we assume the next loop iteration will add the 'to_point'
+                 # optimized_path.append(connection_points[1]) # Add the start point of the next curve
+                 pass # The next iteration handles adding the start point of the next curve
+
+            # --- Old Logic ---
+            # --- End Old Logic ---
+
+        # Remove consecutive duplicate points
+        final_path = []
+        if optimized_path:
+             # Ensure the first point is always added
+             if optimized_path:
+                 final_path.append(optimized_path[0])
+                 for k in range(1, len(optimized_path)):
+                      # Add subsequent points only if they are different enough from the previous one
+                      if self._euclidean_distance(final_path[-1], optimized_path[k]) > 1e-6:
+                           final_path.append(optimized_path[k])
+
+        return final_path
     
     def _run_concorde(self, tsp_filename):
         """
@@ -531,12 +628,14 @@ class ToolpathOptimizer:
             layer_polygons (list): List of Shapely Polygons for the layer.
 
         Returns:
-            float: Euclidean distance or float('inf') if intersection occurs.
+            tuple: (cost, p1, p2) where cost is Euclidean distance or float('inf'),
+                   and p1, p2 are the points defining the connection.
         """
+        cost = self._euclidean_distance(p1, p2)
         if self._check_intersection(p1, p2, layer_polygons):
-            return float('inf')
-        else:
-            return self._euclidean_distance(p1, p2)
+            cost = float('inf')
+        # Return the cost and the points defining this specific connection attempt
+        return cost, p1, p2
 
     def _euclidean_distance(self, p1, p2):
         """
@@ -559,17 +658,19 @@ class ToolpathOptimizer:
              print(f"  Warning: Invalid points for distance calculation: {p1}, {p2}")
              return float('inf') # Penalize invalid points heavily
 
-    def smooth_path(self, path, segment_length=None):
+    def smooth_path(self, path, segment_length=None, layer_polygons=None):
         """
-        Smooth a path by resampling it with uniform point spacing.
-        
+        Smooth a path by resampling it with uniform point spacing, avoiding hole intersections.
+
         Args:
-            path (list): List of (x, y) points defining the path
+            path (list): List of (x, y) points defining the path.
             segment_length (float, optional): Desired distance between points.
                                              If None, uses value from config.
-                                             
+            layer_polygons (list, optional): List of Shapely Polygons for the current layer
+                                             to check against for hole intersections.
+
         Returns:
-            list: Smoothed path with uniform point spacing
+            list: Smoothed path with uniform point spacing.
         """
         if not path or len(path) < 2:
             return path
@@ -621,12 +722,42 @@ class ToolpathOptimizer:
                 # Interpolate to find the point
                 x = p1[0] + t * (p2[0] - p1[0])
                 y = p1[1] + t * (p2[1] - p1[1])
-                
-                # Add the point to the smoothed path
-                smoothed_path.append((x, y))
-                
-                # Update tracking variables
-                current_segment += 1
+                next_point = (x, y)
+
+                # --- Intersection Check ---
+                valid_segment = True
+                if layer_polygons and len(smoothed_path) > 0:
+                    last_point = smoothed_path[-1]
+                    # Avoid zero-length segments for checking
+                    if self._euclidean_distance(last_point, next_point) > 1e-6:
+                        segment_line = LineString([last_point, next_point])
+                        for poly in layer_polygons:
+                            if isinstance(poly, Polygon): # Ensure it's a Polygon
+                                for interior in poly.interiors:
+                                    if segment_line.intersects(interior):
+                                        # print(f"  Warning: Smoothing segment intersects hole boundary. "
+                                        #       f"Segment: {last_point} -> {next_point}. Skipping point.")
+                                        valid_segment = False
+                                        break # Stop checking interiors for this poly
+                            if not valid_segment:
+                                break # Stop checking other polygons
+
+                # Add the point only if the segment is valid
+                if valid_segment:
+                    smoothed_path.append(next_point)
+                    # Update tracking variables only if point was added
+                    current_segment += 1
+                    target_length = current_segment * segment_length
+                    t_start = t
+                else:
+                    # If intersection occurs, we skip this point and try the next target_length
+                    # This might lead to slightly uneven spacing near holes.
+                    # An alternative would be to stop smoothing for this p1-p2 segment.
+                    target_length += segment_length # Move target to next point
+
+                # If we've reached the end of this segment, break
+                if abs(t - 1) < 1e-6:
+                    break
                 target_length = current_segment * segment_length
                 t_start = t
                 
@@ -637,10 +768,27 @@ class ToolpathOptimizer:
             # Update the current length along the path
             current_length += segment_length_i
         
-        # Always include the last point
-        if smoothed_path[-1] != path[-1]:
-            smoothed_path.append(path[-1])
-            
+        # Always include the last point, checking the final segment
+        last_point_original = path[-1]
+        if smoothed_path and smoothed_path[-1] != last_point_original:
+             valid_segment = True
+             if layer_polygons and len(smoothed_path) > 0:
+                 last_added_point = smoothed_path[-1]
+                 if self._euclidean_distance(last_added_point, last_point_original) > 1e-6:
+                     segment_line = LineString([last_added_point, last_point_original])
+                     for poly in layer_polygons:
+                         if isinstance(poly, Polygon):
+                             for interior in poly.interiors:
+                                 if segment_line.intersects(interior):
+                                     valid_segment = False
+                                     break
+                         if not valid_segment:
+                             break
+             if valid_segment:
+                 smoothed_path.append(last_point_original)
+             # else:
+             #      print(f"  Warning: Final segment to endpoint intersects hole. Endpoint not added.")
+
         return smoothed_path
     
     def visualize_optimized_path(self, layer, optimized_path, layer_idx):
@@ -700,6 +848,28 @@ class ToolpathOptimizer:
         
         plt.tight_layout()
         plt.show(block=False)
+
+    def _check_self_intersection(self, path, layer_index):
+        """
+        Checks if a path self-intersects using Shapely.
+
+        Args:
+            path (list): List of (x, y) points defining the path.
+            layer_index (int): The index of the layer for logging purposes.
+        """
+        if not path or len(path) < 4:
+            return # Need at least 4 points for a potential intersection
+
+        try:
+            line = LineString(path)
+            if not line.is_simple:
+                print(f"  WARNING: Layer {layer_index} - Smoothed path may self-intersect.")
+                # Optionally, visualize the intersection points if needed for debugging
+                # intersections = line.intersection(line)
+                # if not intersections.is_empty:
+                #     print(f"    Intersection points/segments: {intersections}")
+        except Exception as e:
+            print(f"  Warning: Could not check self-intersection for layer {layer_index}: {e}")
     def visualize_layer_transitions(self, layers, optimized_paths):
         """
         Visualize the transitions between layers.
