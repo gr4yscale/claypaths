@@ -42,6 +42,9 @@ region_fill_algorithm: "enhanced_contour"      # Contour offsetting + local fill
 #region_fill_algorithm: "fermat_spiral"         # Continuous Fermat spiral from the center outwards
 #region_fill_algorithm: "hilbert"               # Hilbert curve space-filling pattern
 
+# Multiplier for toolpath_width^2 to determine minimum area for contour fill loops
+contour_min_area_multiplier: 4.0
+
 ### Toolpath optimizer
 
 # Whether to run the toolpath optimization step

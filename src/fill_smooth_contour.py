@@ -38,8 +38,9 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
     contours = []
     
     # Generate inward contours until the polygon becomes too small
-    min_area = toolpath_width * toolpath_width * 4  # Minimum area threshold
-    print(f"  Minimum area threshold: {min_area:.4f} sq units")
+    min_area_multiplier = config.get('contour_min_area_multiplier', 4.0) # Default to 4.0 if not set
+    min_area = toolpath_width * toolpath_width * min_area_multiplier  # Minimum area threshold
+    print(f"  Minimum area threshold (multiplier={min_area_multiplier}): {min_area:.4f} sq units")
     
     contour_count = 0
     
