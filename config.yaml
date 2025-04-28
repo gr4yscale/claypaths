@@ -5,7 +5,7 @@ max_layers_to_process: 1                # For quicker test cycles
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 2.0
+toolpath_width: 0.6
 # Height of each layer in mm
 layer_height: 0.5
 
@@ -38,7 +38,9 @@ visualize_fill_paths: True
 #region_fill_algorithm: "hybrid_contour_zigzag" # Contour offset first, then zigzag for remaining areas
 #region_fill_algorithm: "zigzag"                # Simple back-and-forth lines
 #region_fill_algorithm: "contour"               # Continuous contour offsetting inwards
-region_fill_algorithm: "fermat_spiral"         # Continuous Fermat spiral from the center outwards
+region_fill_algorithm: "enhanced_contour"      # Contour offsetting + local fills for remaining areas
+#region_fill_algorithm: "fermat_spiral"         # Continuous Fermat spiral from the center outwards
+#region_fill_algorithm: "hilbert"               # Hilbert curve space-filling pattern
 
 ### Toolpath optimizer
 

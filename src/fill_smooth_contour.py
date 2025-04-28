@@ -1,6 +1,8 @@
 import numpy as np
-from shapely.geometry import Polygon, MultiPolygon, Point, LinearRing # Added Point, LinearRing
+# Use a specific cap style constant
+from shapely.geometry import Polygon, MultiPolygon, Point, LinearRing, LineString, CAP_STYLE 
 from shapely.ops import unary_union
+from shapely.validation import make_valid # Import make_valid
 from src.config import get_config
 # Removed import of _detect_unfilled_regions from region_fill
 # Removed: from src.region_fill import connect_contours

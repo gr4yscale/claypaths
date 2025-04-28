@@ -15,6 +15,8 @@ from src.config import get_config # Import config getter
 from shapely.validation import make_valid
 
 from src.config import get_config # Import config getter
+# Import contour fill algorithms
+# Also import the helper function _detect_unfilled_regions which is now moved there
 from src.fill_smooth_contour import generate_smooth_contour_fill, generate_enhanced_contour_fill, _detect_unfilled_regions
 from src.fill_zigzag import generate_zigzag_fill # Import zigzag fill
 from src.fill_fermat_spiral import generate_fermat_spiral_fill # Import Fermat spiral fill
@@ -41,6 +43,8 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
             containing the contour path first, followed by zigzag paths for unfilled regions.
             For 'fermat_spiral', returns a single list of points (list[tuple]).
             For 'hilbert', returns a single list of points (list[tuple]).
+            For 'enhanced_contour', returns a list of paths (list[list[tuple]]), containing
+            the main contour path and paths for locally filled regions.
             Returns an empty list or list of lists on failure or empty result.
     """
     # Get polygon properties for logging
@@ -115,6 +119,17 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
              print(f"Successfully generated contour fill path with {len(fill_result)} points")
         else:
              print("WARNING: Failed to generate contour fill path (empty result)")
+
+    elif algorithm == 'enhanced_contour':
+        print("Generating enhanced contour-based fill pattern...")
+        enhanced_paths = generate_enhanced_contour_fill(polygon, toolpath_width)
+        fill_result = enhanced_paths # Returns list[list[tuple]]
+        if fill_result:
+             num_paths = len(fill_result)
+             num_points = sum(len(p) for p in fill_result)
+             print(f"Successfully generated {num_paths} enhanced contour path(s) with {num_points} total points")
+        else:
+             print("WARNING: Failed to generate enhanced contour fill path(s) (empty result)")
 
     elif algorithm == 'fermat_spiral':
         print("Generating Fermat spiral fill pattern...")
