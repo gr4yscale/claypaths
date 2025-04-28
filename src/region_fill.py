@@ -112,13 +112,15 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
 
     if algorithm == 'contour':
         print("Generating contour-based fill pattern...")
-        # Note: generate_smooth_contour_fill now returns (path, last_polygon)
-        contour_path, _ = generate_smooth_contour_fill(polygon, toolpath_width) 
-        fill_result = contour_path # Keep return type as single path for pure contour
+        # generate_smooth_contour_fill now returns (list_of_paths, last_polygon)
+        contour_paths, _ = generate_smooth_contour_fill(polygon, toolpath_width)
+        fill_result = contour_paths # Return type is now list[list[tuple]]
         if fill_result:
-             print(f"Successfully generated contour fill path with {len(fill_result)} points")
+             num_paths = len(fill_result)
+             num_points = sum(len(p) for p in fill_result)
+             print(f"Successfully generated {num_paths} contour path(s) with {num_points} total points")
         else:
-             print("WARNING: Failed to generate contour fill path (empty result)")
+             print("WARNING: Failed to generate contour fill path(s) (empty result)")
 
     elif algorithm == 'enhanced_contour':
         print("Generating enhanced contour-based fill pattern...")

@@ -5,7 +5,7 @@ max_layers_to_process: 1                # For quicker test cycles
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 0.6
+toolpath_width: 0.2
 # Height of each layer in mm
 layer_height: 0.5
 

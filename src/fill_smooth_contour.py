@@ -17,8 +17,9 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
         toolpath_width (float): Width of the toolpath.
 
     Returns:
-        tuple[list, Polygon | None]: A tuple containing:
-            - list: List of points representing the continuous toolpath.
+        tuple[list[list[tuple]], Polygon | None]: A tuple containing:
+            - list[list[tuple]]: A list of paths, where each path is a list of points
+                                 representing a single contour loop.
             - Polygon | None: The innermost polygon boundary reached, or None if no fill generated.
     """
     # The code below this comment block was the core logic of the original contour fill
@@ -98,31 +99,41 @@ def generate_smooth_contour_fill(polygon, toolpath_width):
             print(f"  Error during buffer operation: {e}")
             break
             
-    # The 'current_polygon' at this point is the boundary of the unfilled region
+    # The 'current_polygon' at this point is the boundary of the potential unfilled region
     # (or the last valid polygon before it became too small/invalid)
-    
-    # Connect the contours to form a continuous spiral path
-    # We don't optimize for previous end point here as the toolpath optimizer will handle that
-    path = connect_contours(contours, toolpath_width)
-    
-    # Return the path and the final inner polygon
-    # Return None for the polygon if the buffer failed early or area was too small initially
+
+    # Convert the collected contours (LinearRings) into a list of paths (list of points)
+    contour_paths = []
+    if contours:
+        print(f"  Converting {len(contours)} contours into separate paths.")
+        for contour_ring in contours:
+            # Exclude the last point as it's the same as the first for LinearRing
+            path_points = list(contour_ring.coords)[:-1]
+            if len(path_points) >= 2: # Need at least two points for a path segment
+                contour_paths.append(path_points)
+            else:
+                print(f"    Warning: Skipping contour with less than 2 points.")
+    else:
+        print("  No valid contours generated.")
+
+    # Return the list of contour paths and the final inner polygon
     last_inner_polygon = current_polygon if current_polygon.area > 1e-6 else None
 
-    return path, last_inner_polygon
+    return contour_paths, last_inner_polygon
 
 
 # --- Internal Helper Function (Moved from region_fill.py) ---
 
-def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
+def _detect_unfilled_regions(original_polygon, coverage_geometry, toolpath_width):
     """
-    Calculates the region(s) within the original polygon (excluding holes) 
-    that are not covered by the contour toolpath.
+    Calculates the region(s) within the original polygon (excluding holes)
+    that are not covered by the provided coverage geometry (e.g., buffered toolpaths).
 
     Args:
         original_polygon (Polygon): The initial polygon for the layer slice.
-        contour_path (list[tuple]): The list of points representing the contour fill path.
-        toolpath_width (float): The width of the toolpath.
+        coverage_geometry (Polygon | MultiPolygon | None): The geometry representing the area
+                                                           covered by the toolpaths.
+        toolpath_width (float): The width of the toolpath (used for logging/context).
 
     Returns:
         list[Polygon]: A list of polygons representing the unfilled areas.
@@ -132,37 +143,20 @@ def _detect_unfilled_regions(original_polygon, contour_path, toolpath_width):
         print("  Original polygon invalid or empty for unfilled region detection.")
         return []
 
-    if not contour_path or len(contour_path) < 2:
-        print("  No valid contour path provided; considering entire polygon (minus holes) as unfilled.")
+    # Use the provided coverage_geometry, or an empty polygon if None/invalid
+    if coverage_geometry is None or not coverage_geometry.is_valid or coverage_geometry.is_empty:
+        print("  No valid coverage geometry provided; considering entire polygon (minus holes) as unfilled.")
         # If the original polygon is simple (no holes), return it directly.
-        # If it has holes, the difference calculation below handles it implicitly.
-        # However, returning the original directly might be faster if no path exists.
         if not original_polygon.interiors:
              return [original_polygon]
         else:
              # Proceed with difference calculation against an empty geometry
-             contour_coverage_area = Polygon() 
-    else:
-        try:
-            # Create area covered by contour path
-            path_line = LineString(contour_path)
-            # Buffer the line by half the toolpath width on each side
-            # Use CAP_STYLE.flat to prevent rounded ends from over-covering
-            contour_coverage_area = path_line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat)
-            
-            if not contour_coverage_area.is_valid:
-                 print("  Warning: Contour coverage area is invalid, attempting fix.")
-                 contour_coverage_area = make_valid(contour_coverage_area)
-                 # contour_coverage_area = contour_coverage_area.buffer(0) # Older shapely
-
-        except Exception as e:
-            print(f"  Error creating contour coverage area: {e}")
-            return [] # Cannot determine unfilled regions
+             coverage_geometry = Polygon() # Use empty polygon for difference calculation
 
     try:
-        # Calculate the difference: Original Polygon - Contour Coverage = Unfilled Area
+        # Calculate the difference: Original Polygon - Coverage Geometry = Unfilled Area
         # This automatically respects holes in the original_polygon
-        difference = original_polygon.difference(contour_coverage_area)
+        difference = original_polygon.difference(coverage_geometry)
         
         # Ensure the resulting difference is valid
         if not difference.is_valid:
@@ -209,21 +203,42 @@ def generate_enhanced_contour_fill(polygon, toolpath_width):
     """
     all_paths = []
 
-    # 1. Generate the main contour fill path
-    print("  Generating main contour path...")
-    main_contour_path, _ = generate_smooth_contour_fill(polygon, toolpath_width)
+    # 1. Generate the main contour fill paths
+    print("  Generating main contour paths...")
+    # generate_smooth_contour_fill now returns a list of paths
+    main_contour_paths, _ = generate_smooth_contour_fill(polygon, toolpath_width)
 
-    if main_contour_path:
-        all_paths.append(main_contour_path)
-        print(f"    Generated main contour path with {len(main_contour_path)} points.")
+    if main_contour_paths:
+        all_paths.extend(main_contour_paths) # Use extend for list of paths
+        num_main_paths = len(main_contour_paths)
+        num_main_points = sum(len(p) for p in main_contour_paths)
+        print(f"    Generated {num_main_paths} main contour path(s) with {num_main_points} total points.")
     else:
         print("    WARNING: Failed to generate main contour path.")
         # If the main contour fails, the entire polygon is considered unfilled.
 
-    # 2. Detect unfilled regions based on the generated main contour path
+    # 2. Detect unfilled regions based on the generated main contour paths
     #    (or the original polygon if the main path failed)
     print("  Detecting unfilled regions...")
-    unfilled_regions = _detect_unfilled_regions(polygon, main_contour_path, toolpath_width)
+    # _detect_unfilled_regions expects coverage geometry.
+    # Calculate coverage from the list of main_contour_paths.
+    coverage_geometry = None
+    if main_contour_paths: # Use the plural form from the previous block
+        try:
+            buffered_paths = []
+            for path in main_contour_paths:
+                 if len(path) >= 2:
+                      line = LineString(path)
+                      buffered_paths.append(line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat))
+            if buffered_paths:
+                 coverage_geometry = unary_union(buffered_paths)
+                 if not coverage_geometry.is_valid:
+                      print("    Warning: Union of buffered paths resulted in invalid geometry, attempting fix.")
+                      coverage_geometry = make_valid(coverage_geometry)
+        except Exception as e:
+            print(f"    Warning: Error creating coverage geometry from paths: {e}")
+
+    unfilled_regions = _detect_unfilled_regions(polygon, coverage_geometry, toolpath_width)
     print(f"    Detected {len(unfilled_regions)} unfilled region(s).")
 
     # 3. Generate contour fill for each detected unfilled region
@@ -231,12 +246,14 @@ def generate_enhanced_contour_fill(polygon, toolpath_width):
     for i, region in enumerate(unfilled_regions):
         print(f"    Generating local contour fill for unfilled region {i+1} (Area: {region.area:.2f})...")
         # Recursively call the standard contour fill for the small region
-        local_path, _ = generate_smooth_contour_fill(region, toolpath_width)
+        # This will return a list of paths for the local region
+        local_paths, _ = generate_smooth_contour_fill(region, toolpath_width)
 
-        if local_path:
-            num_local_points = len(local_path)
-            print(f"      Generated local path with {num_local_points} points.")
-            all_paths.append(local_path) # Add the local path to the list
+        if local_paths:
+            num_local_paths = len(local_paths)
+            num_local_points = sum(len(p) for p in local_paths)
+            print(f"      Generated {num_local_paths} local path(s) with {num_local_points} points.")
+            all_paths.extend(local_paths) # Add the local paths to the list
             total_local_points += num_local_points
         else:
             print(f"      WARNING: Failed to generate local contour fill for region {i+1}.")
@@ -247,108 +264,8 @@ def generate_enhanced_contour_fill(polygon, toolpath_width):
     return all_paths
 
 
-# --- Contour Connection Logic (Moved from region_fill.py) ---
-
-def connect_contours(contours, toolpath_width, prev_end_point=None):
-    """
-    Connect contours to form a continuous spiral path.
-    
-    Args:
-        contours (list): List of LinearRings representing contours
-        toolpath_width (float): Width of the toolpath
-        prev_end_point (tuple, optional): The end point of the previous layer's path (x, y)
-        
-    Returns:
-        list: List of points representing the continuous path
-    """
-    if not contours:
-        print("  No contours to connect")
-        return []
-    
-    print(f"  Connecting {len(contours)} contours to form continuous path")
-    path = []
-    
-    # Start with the outermost contour
-    outer_contour_coords = list(contours[0].coords)[:-1]  # Exclude the last point as it's the same as the first
-    print(f"  Outer contour has {len(outer_contour_coords)} points")
-    
-    # Add the outer contour points to the path
-    for x, y in outer_contour_coords:
-        path.append((x, y))
-    
-    # Connect to inner contours
-    for i in range(1, len(contours)):
-        # Find the closest point on the next contour to the current position
-        current_point = Point(path[-1])
-        next_contour = contours[i]
-        
-        # Sample points along the contour to find the closest
-        next_coords = list(next_contour.coords)[:-1]  # Exclude the last duplicate point
-        print(f"  Contour {i} has {len(next_coords)} points")
-        
-        # Find the closest point
-        min_dist = float('inf')
-        closest_idx = 0
-        
-        for j, point in enumerate(next_coords):
-            dist = current_point.distance(Point(point))
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = j
-        
-        print(f"  Connecting to contour {i} at point {closest_idx} (distance: {min_dist:.4f})")
-        
-        # Create a smooth connection to the next contour
-        connection_points = create_smooth_connection(
-            path[-1], 
-            next_coords[closest_idx], 
-            toolpath_width
-        )
-        
-        print(f"  Added {len(connection_points)} connection points")
-        
-        for point in connection_points:
-            path.append(point)
-        
-        # Add the next contour, starting from the closest point and wrapping around
-        for j in range(len(next_coords)):
-            idx = (closest_idx + j) % len(next_coords)
-            path.append(next_coords[idx])
-    
-    return path
-
-def create_smooth_connection(start_point, end_point, toolpath_width):
-    """
-    Create a smooth connection between two points.
-    
-    Args:
-        start_point (tuple): Starting point (x, y)
-        end_point (tuple): Ending point (x, y)
-        toolpath_width (float): Width of the toolpath
-        
-    Returns:
-        list: List of points forming a smooth connection
-    """
-    # Calculate direction vector
-    dx = end_point[0] - start_point[0]
-    dy = end_point[1] - start_point[1]
-    distance = np.sqrt(dx*dx + dy*dy)
-    
-    # If points are very close, just return a direct line
-    if distance < toolpath_width:
-        return [end_point]
-    
-    # Create a smooth curve using a few intermediate points
-    num_points = max(3, int(distance / toolpath_width))
-    
-    # Use a simple curve approximation
-    connection_points = []
-    
-    for i in range(1, num_points):
-        t = i / num_points
-        # Simple quadratic curve
-        x = start_point[0] + t * dx
-        y = start_point[1] + t * dy
-        connection_points.append((x, y))
-    
-    return connection_points
+# --- Contour Connection Logic (REMOVED) ---
+# The functions connect_contours and create_smooth_connection have been removed
+# as the contour fill algorithms now return lists of separate paths instead of
+# a single connected path. Path connection/optimization is handled by the
+# ToolpathOptimizer class.
