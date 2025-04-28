@@ -164,23 +164,43 @@ def generate_continuous_fill(polygon, toolpath_width, prev_end_point=None):
              print("WARNING: Failed to generate zigzag fill path(s) (empty result)")
 
     elif algorithm == 'hybrid_contour_zigzag':
-        print("Generating hybrid contour + zigzag fill pattern...")
+        print("Generating hybrid enhanced_contour + zigzag fill pattern...")
         all_paths = []
-        
-        # 1. Generate contour fill
-        contour_path, last_inner_polygon = generate_smooth_contour_fill(polygon, toolpath_width)
-        if contour_path:
-            all_paths.append(contour_path) # Add contour path as the first path
-            print(f"  Generated contour part with {len(contour_path)} points.")
-        else:
-            print("  WARNING: Failed to generate contour part.")
-            # If contour fails, should we fill the whole area with zigzag?
-            # For now, we proceed, and _detect_unfilled_regions will likely find the whole area.
 
-        # 2. Detect unfilled regions based on the generated contour path
-        unfilled_regions = _detect_unfilled_regions(polygon, contour_path, toolpath_width)
+        # 1. Generate enhanced contour fill (returns list of paths)
+        # Note: generate_enhanced_contour_fill internally handles detecting and filling
+        # some regions. We are essentially using it as the first stage.
+        contour_paths = generate_enhanced_contour_fill(polygon, toolpath_width)
+        if contour_paths:
+            all_paths.extend(contour_paths) # Add all paths from enhanced contour
+            num_contour_paths = len(contour_paths)
+            num_contour_points = sum(len(p) for p in contour_paths)
+            print(f"  Generated enhanced contour part with {num_contour_paths} path(s) and {num_contour_points} points.")
+        else:
+            print("  WARNING: Failed to generate enhanced contour part.")
+            # If contour fails, the whole area needs zigzag fill.
+
+        # 2. Detect unfilled regions based on the coverage of the enhanced contour paths
+        # Calculate coverage geometry from the list of contour_paths
+        coverage_geometry = None
+        if contour_paths:
+            try:
+                buffered_paths = []
+                for path in contour_paths:
+                     if len(path) >= 2:
+                          line = LineString(path)
+                          buffered_paths.append(line.buffer(toolpath_width / 2.0, cap_style=CAP_STYLE.flat))
+                if buffered_paths:
+                     coverage_geometry = unary_union(buffered_paths)
+                     if not coverage_geometry.is_valid:
+                          print("    Warning: Union of buffered paths resulted in invalid geometry, attempting fix.")
+                          coverage_geometry = make_valid(coverage_geometry)
+            except Exception as e:
+                print(f"    Warning: Error creating coverage geometry from enhanced contour paths: {e}")
+
+        unfilled_regions = _detect_unfilled_regions(polygon, coverage_geometry, toolpath_width)
         unfilled_regions_for_viz = unfilled_regions # Save for visualization
-        print(f"  Detected {len(unfilled_regions)} unfilled region(s) not covered by contour path.")
+        print(f"  Detected {len(unfilled_regions)} unfilled region(s) not covered by enhanced contour paths.")
 
         # 3. Generate zigzag fill for detected unfilled regions
         total_zigzag_points = 0

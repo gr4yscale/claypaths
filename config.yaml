@@ -35,10 +35,10 @@ visualize_problematic_segments: False
 # The region fill path before optimization
 visualize_fill_paths: True
 
-#region_fill_algorithm: "hybrid_contour_zigzag" # Contour offset first, then zigzag for remaining areas
+region_fill_algorithm: "hybrid_contour_zigzag" # Contour offset first, then zigzag for remaining areas
+#region_fill_algorithm: "enhanced_contour"      # Contour offsetting + local fills for remaining areas
 #region_fill_algorithm: "zigzag"                # Simple back-and-forth lines
 #region_fill_algorithm: "contour"               # Continuous contour offsetting inwards
-region_fill_algorithm: "enhanced_contour"      # Contour offsetting + local fills for remaining areas
 #region_fill_algorithm: "fermat_spiral"         # Continuous Fermat spiral from the center outwards
 #region_fill_algorithm: "hilbert"               # Hilbert curve space-filling pattern
 
