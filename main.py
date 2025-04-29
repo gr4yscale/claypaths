@@ -97,8 +97,17 @@ def main():
         toolpath_width = config['toolpath_width']
         perimeter_count = config.get('perimeter_count', 1) # Get perimeter count from config
         
-        # Create a toolpath optimizer
-        optimizer = ToolpathOptimizer(toolpath_width)
+        # Get the configured optimizer
+        config = get_config()
+        optimizer_class = config.get('toolpath_optimizer', 'OptimizerA')
+        
+        # Create the appropriate optimizer instance
+        if optimizer_class == 'OptimizerB':
+            optimizer = OptimizerB(toolpath_width)
+        else:
+            optimizer = OptimizerA(toolpath_width)
+            
+        print(f"Using {optimizer_class} for toolpath optimization")
         
         # Process all layers
         if layers and len(layers) > 0:

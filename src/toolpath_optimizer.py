@@ -8,7 +8,7 @@ import tempfile
 import re
 from src.config import get_config
 
-class ToolpathOptimizer:
+class OptimizerA:
     """
     Optimizes toolpaths using TSP solver and greedy algorithms to minimize travel distance.
     Ensures travel moves do not cross holes or go outside layer boundaries.
@@ -16,7 +16,7 @@ class ToolpathOptimizer:
 
     def __init__(self, toolpath_width=None):
         """
-        Initialize the toolpath optimizer.
+        Initialize OptimizerA.
 
         Args:
             toolpath_width (float, optional): Width of the toolpath in mm.
@@ -1063,3 +1063,72 @@ class ToolpathOptimizer:
         ax.view_init(elev=20., azim=-65) # Adjust viewing angle
         plt.tight_layout()
         plt.show(block=False)
+class OptimizerB:
+    """
+    A stub implementation of an alternative toolpath optimizer.
+    """
+    
+    def __init__(self, toolpath_width=None):
+        """
+        Initialize OptimizerB.
+
+        Args:
+            toolpath_width (float, optional): Width of the toolpath in mm.
+                                             If None, uses value from config.
+        """
+        # Use configuration value if toolpath_width is not provided
+        if toolpath_width is None:
+            config = get_config()
+            toolpath_width = config['toolpath_width']
+
+        self.toolpath_width = toolpath_width
+        self.total_cost = 0.0
+        self.layer_paths = []
+
+    def optimize_layers(self, layers, layer_paths):
+        """
+        Stub implementation for layer optimization.
+
+        Args:
+            layers (list): List of layer contours
+            layer_paths (list): List of paths for each layer
+
+        Returns:
+            list: Empty list since this is a stub implementation
+        """
+        print("OptimizerB: No optimization implemented yet")
+        return []
+
+    # Add other required methods as stubs to match OptimizerA's interface
+    def _split_path_into_segments(self, path, max_points=None):
+        return [path]
+
+    def _optimize_layer(self, curves, layer_polygons, prev_end_point=None):
+        return []
+
+    def _run_concorde(self, tsp_filename):
+        return None
+
+    def _greedy_tsp(self, distance_matrix, layer_polygons, layer_boundary_buffered, prev_end_point=None, endpoints=None):
+        return []
+
+    def _is_invalid_segment(self, p1, p2, layer_polygons, layer_boundary_buffered):
+        return False
+
+    def _calculate_connection_cost(self, p1, p2, layer_polygons, layer_boundary_buffered):
+        return float('inf'), p1, p2
+
+    def _euclidean_distance(self, p1, p2):
+        return 0.0
+
+    def smooth_path(self, path, segment_length=None, layer_polygons=None):
+        return path
+
+    def visualize_optimized_path(self, layer, optimized_path, layer_idx):
+        pass
+
+    def _check_self_intersection(self, path, layer_index):
+        pass
+
+    def visualize_layer_transitions(self, layers, optimized_paths):
+        pass
