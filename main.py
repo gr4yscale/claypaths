@@ -5,7 +5,7 @@ from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
 from src.perimeter import generate_perimeter_paths # Import perimeter generation
 from src.region_fill import generate_continuous_fill, visualize_fill_path # visualize_fill_path might be removed later
-from src.toolpath_optimizer import ToolpathOptimizer
+from src.optimizer_a import OptimizerA
 from src.gcode_generator import GCodeGenerator
 from src.config import get_config
 
