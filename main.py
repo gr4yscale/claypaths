@@ -108,99 +108,46 @@ def main():
             
             print(f"Processing {num_layers_to_process} layers...")
             
-            # Generate fill paths for all layers first
             all_layer_paths = []
             
-            for layer_idx, layer in enumerate(layers_to_process):
-                print(f"\nGenerating fill paths for layer {layer_idx+1}/{len(layers_to_process)}...")
-                
-                # Generate paths for each polygon in the layer
-                layer_paths = [] # Stores all paths (perimeters + fill) for the layer
-                for j, polygon in enumerate(layer):
-                    print(f"\n  Processing polygon {j+1} in layer {layer_idx+1}...")
-                    
-                    # 1. Generate Perimeter Paths
-                    perimeter_paths, inner_fill_polygon = generate_perimeter_paths(
-                        polygon, perimeter_count, toolpath_width
-                    )
-                    
-                    # Add valid perimeter paths to the layer paths
-                    valid_perimeter_paths = [p for p in perimeter_paths if len(p) > 1]
-                    layer_paths.extend(valid_perimeter_paths)
-                    
-                    # 2. Generate Fill Paths (if inner polygon exists)
-                    fill_paths_for_polygon = []
-                    if inner_fill_polygon:
-                        fill_result = generate_continuous_fill(inner_fill_polygon, toolpath_width) 
-                        
-                        # Process fill_result (can be list or list of lists)
-                        if fill_result:
-                            is_list_of_paths = (isinstance(fill_result, list) and 
-                                                len(fill_result) > 0 and 
-                                                isinstance(fill_result[0], list))
+            paths_for_gcode = [] # Store the final path for each layer for GCode generation
 
-                            if is_list_of_paths:
-                                valid_fill_paths = [p for p in fill_result if len(p) > 1]
-                                fill_paths_for_polygon.extend(valid_fill_paths)
-                            elif isinstance(fill_result, list) and len(fill_result) > 1:
-                                fill_paths_for_polygon.append(fill_result)
-                                
-                    # Add valid fill paths to the layer paths
-                    layer_paths.extend(fill_paths_for_polygon)
+            for layer_idx, layer_polygons in enumerate(layers_to_process):
+                print(f"\nProcessing layer {layer_idx+1}/{len(layers_to_process)}...")
 
-                    # Visualize the results for this polygon (perimeters and fill)
-                    # Note: visualize_fill_path needs adaptation to show perimeters distinctly
-                    visualize_fill_path(
-                        polygon=polygon, 
-                        perimeter_paths=valid_perimeter_paths, 
-                        fill_paths=fill_paths_for_polygon, 
-                        title=f"Layer {layer_idx+1}, Polygon {j+1} - Perimeters & Fill"
-                        # unfilled_regions could be passed if generated and needed for viz
-                    )
-                            
-                all_layer_paths.append(layer_paths) # Add all paths (perimeters + fill) for this layer
-            
-            # Step 4: Optimize paths (optional)
-            enable_optimization = config.get('enable_toolpath_optimization', True)
-            paths_for_gcode = [] # This will hold either optimized or unoptimized paths
+                layer_paths = []
+                # Process each polygon in the layer (usually one, but could be more for complex slices)
+                for poly_idx, polygon in enumerate(layer_polygons):
+                    print(f"  Generating continuous offset fill for polygon {poly_idx+1}...")
 
-            if enable_optimization:
-                print("\nStep 4: Optimizing paths across all layers...")
-                optimized_paths = optimizer.optimize_layers(layers_to_process, all_layer_paths)
-                paths_for_gcode = optimized_paths # Use optimized paths for GCode
+                    # Generate the continuous path using the new method
+                    continuous_path = generate_continuous_offset_fill(polygon, toolpath_width)
 
-                # Visualize the optimized paths
-                for layer_idx, (layer, path) in enumerate(zip(layers_to_process, optimized_paths)):
-                    if path:
-                        print(f"\nLayer {layer_idx+1}: Optimized path with {len(path)} points")
-                        
-                        # Visualize the optimized path
-                        optimizer.visualize_optimized_path(layer, path, layer_idx)
-                        
-                        # If this isn't the first layer, print the travel distance
-                        if layer_idx > 0 and optimized_paths[layer_idx-1]:
-                            prev_end = optimized_paths[layer_idx-1][-1]
-                            curr_start = path[0]
-                            travel_dist = np.sqrt((prev_end[0] - curr_start[0])**2 + 
-                                                 (prev_end[1] - curr_start[1])**2)
-                            print(f"Travel distance between layers {layer_idx} and {layer_idx+1}: "
-                                  f"{travel_dist:.2f}mm")
+                    if continuous_path:
+                        layer_paths.append(continuous_path)
+                        # Optional: Visualize each layer's path
+                        # visualize_contours_and_path(polygon, continuous_path, f"Layer {layer_idx+1} Polygon {poly_idx+1} Path")
                     else:
-                        print(f"\nLayer {layer_idx+1}: No valid path generated after optimization")
-                
-                # Visualize the transitions between layers
-                print("\nVisualizing layer transitions...")
-                optimizer.visualize_layer_transitions(layers_to_process, optimized_paths)
-            else:
-                print("\nStep 4: Toolpath optimization is disabled.")
-                # Use the unoptimized paths directly for GCode generation
-                # The optimizer returns a single path per layer, while all_layer_paths
-                # contains a list of paths per layer. We need to adapt the GCode generator
-                # or format the paths here. For now, let's assume GCode generator
-                # can handle the list of paths per layer format.
-                # TODO: Verify GCode generator handles list of paths per layer.
-                paths_for_gcode = all_layer_paths 
-            
+                        print(f"  Warning: Could not generate path for polygon {poly_idx+1} in layer {layer_idx+1}")
+
+                if layer_paths:
+                     # Combine paths if multiple polygons were processed in the layer
+                     # For now, assume we just take the paths as a list (or combine if needed by optimizer later)
+                     # If the fill function returns a single LineString per polygon,
+                     # we might need an optimizer step here to connect them if there are multiple.
+                     # For now, store them as a list.
+                     all_layer_paths.append(layer_paths) # Store paths for this layer
+                     paths_for_gcode.append(layer_paths) # Add to list for GCode
+                else:
+                     all_layer_paths.append([]) # Keep layer count consistent
+                     paths_for_gcode.append([])
+
+
+            # Step 4: (Optional) Optimization - Skipped for now, using direct output
+            print("\nStep 4: Toolpath Optimization (Skipped - Using direct continuous path)")
+            # optimized_paths = paths_for_gcode # Use the generated paths directly
+
+
             # Step 5: Generate GCode
             if config.get('generate_gcode', True):
                 print("\nStep 5: Generating GCode...")
