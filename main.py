@@ -1,11 +1,10 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt # Ensure matplotlib is imported
+import matplotlib.pyplot as plt
 from src.stl_loader import load_stl, visualize_stl, get_mesh_info
 from src.slicer import slice_mesh, visualize_layers
-from src.perimeter import generate_perimeter_paths # Import perimeter generation
-from src.region_fill import generate_continuous_fill, visualize_fill_path # visualize_fill_path might be removed later
-from src.optimizer_a import OptimizerA
+# from src.perimeter import generate_perimeter_paths # Keep if needed later
+from src.fill_continuous_offset import generate_continuous_offset_fill, visualize_contours_and_path # Import the new function
 from src.gcode_generator import GCodeGenerator
 from src.config import get_config
 
@@ -91,28 +90,12 @@ def main():
         else:
              print("No layers were generated, skipping visualization.")
 
-        # Step 3: Generate perimeters and region fill for each layer
-        print("\nStep 3: Generating perimeters and region fill for layers")
+        print("\nStep 3: Generating continuous toolpath for layers")
         config = get_config()
         toolpath_width = config['toolpath_width']
         perimeter_count = config.get('perimeter_count', 1) # Get perimeter count from config
         
-        # Get the configured optimizer
-        config = get_config()
-        optimizer_class = config.get('toolpath_optimizer', 'OptimizerA')
-        
-        # Create the appropriate optimizer instance
-        if optimizer_class == 'OptimizerB':
-            optimizer = OptimizerB(toolpath_width)
-        elif optimizer_class == 'OptimizerC': # Add condition for OptimizerC
-            optimizer = OptimizerC(toolpath_width)
-        else: # Default to OptimizerA
-            if optimizer_class != 'OptimizerA':
-                 print(f"Warning: Unknown optimizer '{optimizer_class}' specified. Defaulting to OptimizerA.")
-            optimizer = OptimizerA(toolpath_width)
-
-        print(f"Using {optimizer_class} for toolpath optimization")
-        
+       
         # Process all layers
         if layers and len(layers) > 0:
             # Get max layers to process from config
