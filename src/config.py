@@ -17,7 +17,14 @@ DEFAULT_CONFIG = {
     'visualize_optimized_paths': False,
     'visualize_layer_transitions': False,
     'visualize_problematic_segments': False,
-    
+
+    # OptimizerC settings
+    'optimizer_c_resolution': 0.2,      # Pixel size for image processing (mm)
+    'optimizer_c_gaussian_sigma': 1.5,  # Sigma for Gaussian blur
+    'visualize_optimizer_c_binary_image': False, # Show the rasterized layer shape
+    'visualize_optimizer_c_filtered_image': False, # Show the Gaussian blurred image
+    'visualize_optimizer_c_graph': False, # Show the graph nodes and start/end points
+
     # GCode generator settings
     'generate_gcode': True,     # Whether to generate GCode output
     'gcode_flavor': 'klipper',  # GCode flavor, either "klipper" or "marlin"

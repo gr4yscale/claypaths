@@ -104,9 +104,13 @@ def main():
         # Create the appropriate optimizer instance
         if optimizer_class == 'OptimizerB':
             optimizer = OptimizerB(toolpath_width)
-        else:
+        elif optimizer_class == 'OptimizerC': # Add condition for OptimizerC
+            optimizer = OptimizerC(toolpath_width)
+        else: # Default to OptimizerA
+            if optimizer_class != 'OptimizerA':
+                 print(f"Warning: Unknown optimizer '{optimizer_class}' specified. Defaulting to OptimizerA.")
             optimizer = OptimizerA(toolpath_width)
-            
+
         print(f"Using {optimizer_class} for toolpath optimization")
         
         # Process all layers
