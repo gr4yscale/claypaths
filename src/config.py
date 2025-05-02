@@ -7,23 +7,10 @@ DEFAULT_CONFIG = {
     'layer_height': 1.0,    # Default layer height in mm
     'perimeter_count': 2,   # Number of perimeter walls to generate
     'max_layers_to_process': 6,  # Maximum number of layers to process
-    'enable_toolpath_optimization': True, # Whether to run the toolpath optimization step
-    'optimization_method': 'greedy',  # Preferred optimization method
-    'region_fill_algorithm': 'contour', # Algorithm for filling regions ('contour', 'zigzag', 'hybrid_contour_zigzag', 'fermat_spiral')
     
     'visualize_stl_mesh': False,
     'visualize_layer_contours': False,
-    'visualize_fill_paths': False,
-    'visualize_optimized_paths': False,
-    'visualize_layer_transitions': False,
     'visualize_problematic_segments': False,
-
-    # OptimizerC settings
-    'optimizer_c_resolution': 0.2,      # Pixel size for image processing (mm)
-    'optimizer_c_gaussian_sigma': 1.5,  # Sigma for Gaussian blur
-    'visualize_optimizer_c_binary_image': False, # Show the rasterized layer shape
-    'visualize_optimizer_c_filtered_image': False, # Show the Gaussian blurred image
-    'visualize_optimizer_c_graph': False, # Show the graph nodes and start/end points
 
     # GCode generator settings
     'generate_gcode': True,     # Whether to generate GCode output
