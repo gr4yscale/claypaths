@@ -12,6 +12,7 @@ if project_root not in sys.path:
 
 import pyclipper
 from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint
+from shapely.strtree import STRtree
 
 # Import project modules
 from src.stl_loader import load_stl
@@ -340,119 +341,150 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
     num_levels = len(leveled_contours)
     contours_with_breaks = copy.deepcopy(leveled_contours) # Work on a copy
 
+    # --- Build Spatial Index ONCE for ALL Segments ---
+    all_segments_data = []
+    for level_idx in range(num_levels):
+        for contour_k in contours_with_breaks[level_idx]:
+             if not contour_k.points or len(contour_k.points) < 3: continue
+             # Store level index on the contour object itself for easy access later
+             contour_k.level = level_idx # Ensure level is set correctly here if not done before
+             for seg_idx, seg in enumerate(contour_k.get_segments()):
+                 # Create Shapely LineString for indexing
+                 shapely_line = ShapelyLineString([(seg.p1.x, seg.p1.y), (seg.p2.x, seg.p2.y)])
+                 # Store tuple: (geometry, original_segment_object, original_contour_object)
+                 all_segments_data.append((shapely_line, seg, contour_k))
+
+    # Build tree only from geometries
+    all_geometries_for_index = [item[0] for item in all_segments_data]
+    if not all_geometries_for_index:
+        print("Warning: No segments found in any level to build spatial index.")
+        return contours_with_breaks # Return early if no segments exist
+    tree = STRtree(all_geometries_for_index)
+    print(f"Built STRtree with {len(all_geometries_for_index)} total segments.")
+    # --- End Spatial Index Build ---
+
     # Iterate from inner levels outwards (highest level index to 0)
+    # This direction is crucial for the logic of connecting inwards.
     for i in range(num_levels - 1, -1, -1):
         current_level_contours = contours_with_breaks[i]
-        # Determine target level for projection (usually the next level inwards)
-        # For the innermost level (i == num_levels - 1), there's no inner contour to connect to.
-        # For the outermost level (i == 0), there's no outer contour to connect to using this logic.
-        target_level_index = i + 1 # Project onto the next level inwards
 
-        if target_level_index >= num_levels:
-            continue # Innermost level, nothing to connect inwards to
-
-        target_level_contours = contours_with_breaks[target_level_index]
-        if not target_level_contours:
-             continue # Skip if the target level is empty
+        # No need to check target_level_start_index >= num_levels here,
+        # the filtering logic inside the query handles it.
 
         for j, contour in enumerate(current_level_contours):
-            if not contour.points or len(contour.points) < 3: continue # Skip invalid contours
-
+            # Ensure contour is valid and has non-negligible length
+            if not contour.points or len(contour.points) < 3:
+                # print(f"Debug: Skipping invalid contour {j} in level {i}")
+                continue
             contour_len = contour.length()
-            if contour_len < 1e-6: continue # Skip zero-length contours
+            if contour_len < 1e-6:
+                # print(f"Debug: Skipping zero-length contour {j} in level {i}")
+                continue
 
-            # --- Step 1: Find a candidate segment for breakpoint p1 ---
-            # Vary starting point based on layer index to avoid repetition
-            start_offset_ratio = (layer_index % n_layer_period) / n_layer_period
+            # --- Step 1: Find candidate breakpoint p1 ---
+            # Vary starting point based on layer index and contour index to distribute breakpoints
+            # Use modulo arithmetic to cycle through starting positions
+            start_offset_ratio = ((layer_index + j) % n_layer_period) / n_layer_period
             start_dist = start_offset_ratio * contour_len
 
             p1, seg_p1, seg_p1_idx = contour.get_point_at_dist(start_dist)
-            if p1 is None or seg_p1 is None: continue # Should not happen on closed contour
+            if p1 is None or seg_p1 is None:
+                print(f"Warning: Could not find p1 at dist {start_dist:.2f} on contour {j} level {i}")
+                continue # Should not happen on valid closed contour
 
-            # --- Step 2: If the candidate segment is shorter than linespacing ---
-            # The pseudo-code suggests moving to the *next* segment if the *selected* one
-            # is too short. This seems slightly odd. A more logical interpretation might be
-            # to ensure the segment *containing p2* is long enough, or that p1 and p2
-            # don't fall on the same very short segment.
-            # Let's stick to the pseudo-code: check seg_p1's length.
-            # We also need p2 first to check the segment containing p2.
-
-            # --- Step 3: Find p2 in contour with distance p1p2 = linespacing ---
+            # --- Step 2 & 3: Find p2 at distance 'line_spacing' from p1 ---
             # Find p2 by walking 'line_spacing' distance from p1 along the contour
             p2_dist = (start_dist + line_spacing) % contour_len # Wrap around contour
             p2, seg_p2, seg_p2_idx = contour.get_point_at_dist(p2_dist)
-            if p2 is None or seg_p2 is None: continue
+            if p2 is None or seg_p2 is None:
+                print(f"Warning: Could not find p2 at dist {p2_dist:.2f} on contour {j} level {i}")
+                continue
 
-            # Re-check based on Step 2 interpretation: If seg_p1 is too short, advance p1?
-            # This part is ambiguous. Let's assume for now we proceed if p1, p2 are found.
-            # A check like `if seg_p1.length() < line_spacing:` might be added here
-            # to advance p1 if needed, but the logic for advancement isn't fully specified.
+            # Ensure p1 and p2 are distinct points
+            if p1.distance_to(p2) < 1e-6:
+                # print(f"Debug: p1 and p2 are too close on contour {j} level {i}. Skipping breakpoint.")
+                continue
 
-            # --- Step 4 & 5: Find closest segment in the target level ---
-            # Find the contour in the target level that is 'closest' to p1.
-            # Closeness can be defined in various ways (centroid, point-to-polygon).
-            # We'll find the segment across *all* target contours closest to p1.
+            # --- Ambiguity in Original Step 2 ---
+            # The original pseudo-code mentions checking if the segment *containing p1*
+            # is shorter than line_spacing and potentially advancing p1.
+            # This is ambiguous and might lead to complex logic. We proceed assuming
+            # valid p1 and p2 have been found, regardless of the length of seg_p1 or seg_p2.
+            # A check like `if seg_p1.length() < line_spacing:` could be added, but the
+            # corrective action (e.g., how far to advance p1) is unclear.
+
+            # --- Step 4, 5, 6: Find closest valid target segment using Spatial Index ---
+            shapely_p1 = ShapelyPoint(p1.x, p1.y)
+            search_radius = line_spacing * 3.0 # Search radius around p1
+            query_geom = shapely_p1.buffer(search_radius)
+            nearby_indices = tree.query(query_geom) # Indices in geometries_for_index
+
+            valid_candidates = []
+            for index in nearby_indices:
+                # Retrieve data associated with the indexed geometry from the global list
+                shapely_line, seg_sl, cand_target_contour = all_segments_data[index]
+
+                # Filter: Must be in a subsequent level (level > i) and match type
+                if cand_target_contour.level > i and cand_target_contour.type == contour.type:
+                    # Calculate exact distance using Shapely
+                    dist_sl = shapely_p1.distance(shapely_line)
+                    valid_candidates.append({
+                        'distance': dist_sl,
+                        'level': cand_target_contour.level, # Level of the target contour
+                        'segment': seg_sl,
+                        'contour': cand_target_contour
+                    })
+
+            # Sort candidates: first by level (ascending), then by distance (ascending)
+            valid_candidates.sort(key=lambda c: (c['level'], c['distance']))
+
+            # Find the best match according to original logic's criteria
             closest_target_seg: Optional[Segment] = None
+            target_contour_k: Optional[Contour] = None
             min_dist_to_target = float('inf')
-            target_contour_k: Optional[Contour] = None # The contour containing the closest segment
-            p1_proj: Optional[Point] = None
-
             found_target = False
-            current_target_level_idx = target_level_index
-            while not found_target and current_target_level_idx < num_levels:
-                potential_targets = contours_with_breaks[current_target_level_idx]
-                for k, cand_target_contour in enumerate(potential_targets):
-                     # Check if contours belong to the same family (outer/hole)
-                     if cand_target_contour.type == contour.type:
-                         seg_sl, dist_sl, _ = find_closest_segment_to_point(p1, cand_target_contour)
-                         if seg_sl is not None and dist_sl < min_dist_to_target:
-                             min_dist_to_target = dist_sl
-                             closest_target_seg = seg_sl
-                             target_contour_k = cand_target_contour
 
-                # --- Step 6: Check if closest segment distance is acceptable ---
-                # The pseudo-code checks `dist > linespacing`. This implies we want
-                # the connection distance to be *less* than or equal to the line spacing.
-                # If the closest segment is *too far* away, we might look at the next level.
-                if target_contour_k is not None and min_dist_to_target <= line_spacing * 1.5: # Allow some tolerance
+            for candidate in valid_candidates:
+                # Check distance tolerance (must be reasonably close to line_spacing)
+                if candidate['distance'] <= line_spacing * 1.5:
+                    closest_target_seg = candidate['segment']
+                    target_contour_k = candidate['contour']
+                    min_dist_to_target = candidate['distance']
                     found_target = True
-                    break
-                else:
-                    # --- Step 6 (continued): Go back to step 5 (look in next level) ---
-                    current_target_level_idx += 1
-                    min_dist_to_target = float('inf') # Reset for next level search
-                    target_contour_k = None
+                    # print(f"Debug: Found target seg via spatial index for L{i} C{j} -> L{target_contour_k.level} Dist: {min_dist_to_target:.2f}")
+                    break # Found the best one (lowest level, then lowest distance within tolerance)
 
-
-            if not found_target or closest_target_seg is None or target_contour_k is None:
-                 print(f"Warning: Could not find suitable target segment for point {p1} in contour {j} level {i}")
+            if not found_target:
+                 # print(f"Warning: Could not find suitable target segment via spatial index for point {p1} originating from contour {j} level {i}")
                  continue # Could not find a suitable target segment
 
-            # --- Step 7: Find projected point p1' of p1 in sl ---
+            # --- Step 7: Find projected point p1_proj of p1 onto the target segment sl ---
+            # Use the original Segment object's projection method
             p1_proj = closest_target_seg.point_projection(p1)
 
-            # --- Step 8: Find p2' in target_contour_k with p1'p2' = linespacing ---
-            # This requires finding a point p2' on target_contour_k such that the
-            # distance between p1' (which might not be on the contour) and p2' (on the contour)
-            # is exactly line_spacing. This is non-trivial.
-            # A simpler interpretation, often used in practice, is to project p2 onto
-            # the same target contour k and find p2_proj. The connecting segments
-            # will then be p1-p1_proj and p2-p2_proj. Let's use this simpler approach.
-
+            # --- Step 8: Find p2_proj (Simplified Approach) ---
+            # Project p2 onto the *chosen* target contour (target_contour_k).
+            # Use the efficient find_closest_segment_to_point restricted to this contour.
             seg_p2_target, dist_p2_target, _ = find_closest_segment_to_point(p2, target_contour_k)
             if seg_p2_target is None:
-                print(f"Warning: Could not find target segment for point {p2} near contour {k} level {target_level_index}")
+                # This should ideally not happen if target_contour_k is valid
+                print(f"Warning: Could not find target segment for point {p2} near chosen target contour L{target_contour_k.level}")
                 continue
             p2_proj = seg_p2_target.point_projection(p2)
 
-            # --- Step 9: Add connecting segments ---
-            # Store breakpoints and connecting segments conceptually
+            # Ensure projections are valid
+            if p1_proj is None or p2_proj is None:
+                 print(f"Warning: Failed to calculate projections for breakpoint on contour {j} level {i}")
+                 continue
+
+            # --- Step 9: Store breakpoint information and connecting segments ---
+            # Store the four key points defining the break and connection.
             contour.breakpoints.append((p1, p2, p1_proj, p2_proj))
+            # Store the conceptual connecting segments (will be added as subpaths later)
             contour.connecting_segments.append(Segment(p1, p1_proj))
             contour.connecting_segments.append(Segment(p2, p2_proj))
-            # Also add to the target contour for forming subpaths later?
-            # The pseudo code implies modification only on All_contours[i][j]
-            # Let's store breaks on the contour they originate from (level i)
+            # Note: Breakpoints are stored on the contour they originate from (level i).
+            # The sub-path formation logic will use this information.
 
     return contours_with_breaks
 
@@ -597,41 +629,100 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
     current_sub_path = remaining_sub_paths.pop(0)
     global_path.extend(current_sub_path.points)
 
-    while remaining_sub_paths:
-        found_next = False
-        current_end_point = global_path[-1]
+    # Tolerance for comparing floating point coordinates
+    CONNECT_TOLERANCE = 1e-6 # Small tolerance
 
+    while remaining_sub_paths:
+        current_end_point = global_path[-1]
+        best_match_idx = -1
+        min_dist = CONNECT_TOLERANCE # Only connect if distance is within tolerance
+        reverse_needed = False
+        found_next = False
+
+        # Search all remaining paths for the best connection within tolerance
         for i, next_sub_path in enumerate(remaining_sub_paths):
+            if not next_sub_path.points: continue # Skip empty paths
+
             next_start_point = next_sub_path.points[0]
             next_end_point = next_sub_path.points[-1]
 
-            # Check if current end connects to next start
-            if current_end_point == next_start_point:
-                global_path.extend(next_sub_path.points[1:]) # Add points, skip duplicate start
-                remaining_sub_paths.pop(i)
-                found_next = True
-                break
-            # Check if current end connects to next end (requires reversing next path)
-            elif current_end_point == next_end_point:
-                global_path.extend(reversed(next_sub_path.points[:-1])) # Add reversed points, skip duplicate end
-                remaining_sub_paths.pop(i)
-                found_next = True
-                break
+            dist_to_start = current_end_point.distance_to(next_start_point)
+            dist_to_end = current_end_point.distance_to(next_end_point)
 
-        if not found_next:
-            # If no direct connection found, this indicates an issue:
-            # 1. Disconnected graph of paths (problem in breakpoint logic?)
-            # 2. Floating point inaccuracies preventing endpoint match
-            # 3. Algorithm needs a more sophisticated search (e.g., nearest endpoint)
-            print(f"Warning: Could not find connection for endpoint {current_end_point}.")
-            print(f"Remaining paths: {len(remaining_sub_paths)}")
-            # As a fallback, just append the next available path (will cause a jump)
-            if remaining_sub_paths:
-                 print("Performing fallback: Jumping to next available path.")
-                 next_sub_path = remaining_sub_paths.pop(0)
-                 global_path.extend(next_sub_path.points)
+            # Check connection to the start of the next path
+            if dist_to_start < min_dist:
+                min_dist = dist_to_start
+                best_match_idx = i
+                reverse_needed = False
+                found_next = True # Found a potential match within tolerance
+
+            # Check connection to the end of the next path (requires reversal)
+            # Only consider if it's a better match than the start connection found so far
+            if dist_to_end < min_dist:
+                min_dist = dist_to_end
+                best_match_idx = i
+                reverse_needed = True
+                found_next = True # Found a potential match within tolerance
+
+        # If a suitable connection was found within tolerance
+        if found_next and best_match_idx != -1:
+            matched_sub_path = remaining_sub_paths.pop(best_match_idx)
+            points_to_add = matched_sub_path.points
+
+            if reverse_needed:
+                # Add reversed points, skip the duplicate endpoint (which is now the first element)
+                global_path.extend(reversed(points_to_add[:-1]))
             else:
-                 break # No more paths
+                # Add points, skip the duplicate start point (which is the first element)
+                global_path.extend(points_to_add[1:])
+        else:
+            # If no connection found within tolerance, this indicates an issue:
+            # If no connection found within tolerance, initiate fallback:
+            # Find the geometrically closest endpoint among all remaining paths.
+            if remaining_sub_paths:
+                print(f"Warning: Could not find connection within tolerance for endpoint {current_end_point}.")
+                print(f"Remaining paths: {len(remaining_sub_paths)}. Performing fallback: Finding closest jump.")
+
+                closest_fallback_idx = -1
+                min_fallback_dist = float('inf')
+                fallback_reverse_needed = False
+
+                for i, fallback_path in enumerate(remaining_sub_paths):
+                    if not fallback_path.points: continue
+
+                    fb_start_point = fallback_path.points[0]
+                    fb_end_point = fallback_path.points[-1]
+
+                    dist_to_fb_start = current_end_point.distance_to(fb_start_point)
+                    dist_to_fb_end = current_end_point.distance_to(fb_end_point)
+
+                    if dist_to_fb_start < min_fallback_dist:
+                        min_fallback_dist = dist_to_fb_start
+                        closest_fallback_idx = i
+                        fallback_reverse_needed = False
+
+                    if dist_to_fb_end < min_fallback_dist:
+                        min_fallback_dist = dist_to_fb_end
+                        closest_fallback_idx = i
+                        fallback_reverse_needed = True
+
+                if closest_fallback_idx != -1:
+                    print(f"Fallback: Jumping {min_fallback_dist:.3f} units to the {'end' if fallback_reverse_needed else 'start'} of path {closest_fallback_idx}.")
+                    matched_sub_path = remaining_sub_paths.pop(closest_fallback_idx)
+                    points_to_add = matched_sub_path.points
+
+                    # When jumping, we include the first point of the jumped-to path
+                    if fallback_reverse_needed:
+                        global_path.extend(reversed(points_to_add))
+                    else:
+                        global_path.extend(points_to_add)
+                else:
+                    # Should not happen if remaining_sub_paths is not empty and contains valid paths
+                    print("Error: Fallback failed to find any remaining path.")
+                    break
+            else:
+                 # No remaining paths, normal loop termination
+                 break
 
     return global_path
 
@@ -649,11 +740,61 @@ if __name__ == '__main__':
     n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
 
     # Select STL file
-    # stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
-    # stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
+    #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
+    #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
     #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
-    stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
 
+
+
+    stl_file_path = os.path.join("models", "wrench.stl")
+    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+
+    #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+    #stl_file_path = os.path.join("models", "u-shape.stl")
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+
+
+
+    # testing (stlparts)
+    #stl_file_path = os.path.join("models", "test", "hollow-cuboid.stl") #kinda works
+    #stl_file_path = os.path.join("models", "test", "5cm-cube-with-80-diameter-hole.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
+    #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
+    #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
+    #stl_file_path = os.path.join("models", "test", "ring.stl")
+    #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
+    #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
+    
+    # testing (mine, freecad)
+    #stl_file_path = os.path.join("models", "mine", "hex.stl")
+
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+    
+    #confirmed working, simple models
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+    #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "cuboid.stl")
+    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
+    #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
+    #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
+    #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
+
+
+
+
+
+
+
+
+
+    
     print(f"Processing STL: {os.path.basename(stl_file_path)}")
     print(f"Using Line Spacing (Toolpath Width): {line_spacing} mm")
     print(f"Processing Layer Index: {layer_to_process_idx}")
