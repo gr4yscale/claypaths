@@ -654,6 +654,167 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
 
 
 #-----------------------------------------------------------------------------
+# 7. Path Resampling (Uniform Segment Length)
+#-----------------------------------------------------------------------------
+
+def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> List[ShapelyPoint]:
+    """
+    Resamples a path to have approximately uniform segment lengths.
+
+    Args:
+        path: The input path as a list of Shapely Points.
+        segment_length: The desired length of each segment.
+
+    Returns:
+        A resampled path as a list of Shapely Points.
+    """
+    if not path or len(path) < 2 or segment_length <= 1e-6:
+        return path # Cannot resample
+
+    line = ShapelyLineString(path)
+    total_length = line.length
+    if total_length < segment_length:
+        return path # Path is shorter than desired segment length
+
+    print(f"Resampling path (length {total_length:.2f}) with target segment length {segment_length:.3f}...")
+
+    num_segments = math.ceil(total_length / segment_length)
+    resampled_path: List[ShapelyPoint] = []
+
+    for i in range(num_segments + 1):
+        distance = min(i * segment_length, total_length) # Ensure we don't exceed total length
+        point = line.interpolate(distance)
+        # Avoid adding duplicate points if interpolation yields the same point
+        if not resampled_path or point.distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
+            resampled_path.append(point)
+
+    # Ensure the very last point of the original path is included if not already captured
+    if resampled_path and path[-1].distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
+         # Check if the last interpolated point is very close to the end
+         if total_length - (num_segments * segment_length) > POINT_EQUALITY_TOLERANCE:
+              resampled_path.append(path[-1])
+
+
+    print(f"Resampled path has {len(resampled_path)} points.")
+    return resampled_path
+
+
+#-----------------------------------------------------------------------------
+# 8. Visualization Functions
+#-----------------------------------------------------------------------------
+
+def visualize_final_toolpath(
+    shapely_polygon: ShapelyPolygon,
+    offset_results: List[List[Contour]],
+    path_to_visualize: List[ShapelyPoint],
+    layer_to_process_idx: int,
+    stl_file_path: str
+):
+    """Visualizes the original polygon, offsets, and the final toolpath."""
+    print("\n--- Visualizing Final Toolpath ---")
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np # Import numpy for linspace
+
+        plt.figure(figsize=(10, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')
+
+        # Plot original Shapely polygon
+        orig_x, orig_y = shapely_polygon.exterior.xy
+        ax.plot(orig_x, orig_y, 'k-', label=f'Original Polygon (Layer {layer_to_process_idx})', linewidth=1.5)
+        for interior in shapely_polygon.interiors:
+            int_x, int_y = interior.xy
+            ax.plot(int_x, int_y, 'k-', linewidth=1.5)
+
+        # Plot generated offset contours (from offset_results for clarity)
+        colors = plt.cm.viridis(np.linspace(0, 1, len(offset_results)))
+        for i, level_list in enumerate(offset_results):
+             for contour in level_list:
+                 # Use the cached LineString for plotting coordinates
+                 if contour._line and not contour._line.is_empty:
+                     x, y = contour._line.xy
+                     ax.plot(x, y, color=colors[i], linestyle='--', linewidth=0.8, label=f'Offset Level {i}' if 'Offset' not in plt.gca().get_legend_handles_labels()[1] else "")
+
+
+        # Plot final toolpath (potentially resampled)
+        if path_to_visualize:
+            # Extract coordinates directly from Shapely Points
+            tp_x = [p.x for p in path_to_visualize]
+            tp_y = [p.y for p in path_to_visualize]
+            ax.plot(tp_x, tp_y, 'b-', marker='.', markersize=2, linewidth=1.0, label='Final Toolpath')
+            ax.plot(tp_x[0], tp_y[0], 'go', markersize=6, label='Start') # Mark start
+            ax.plot(tp_x[-1], tp_y[-1], 'ro', markersize=6, label='End')   # Mark end
+
+        # Plot breakpoints and connecting segments (optional, can be noisy)
+        # for level_list in contours_with_breaks:
+        #     for contour in level_list:
+        #         # p1, p2, p1_proj, p2_proj are ShapelyPoints
+        #         for p1, p2, p1_proj, p2_proj in contour.breakpoints:
+        #             ax.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'g:', linewidth=0.7)
+        #             ax.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'm:', linewidth=0.7)
+        #             ax.plot(p1.x, p1.y, 'gx', markersize=4)
+        #             ax.plot(p2.x, p2.y, 'mx', markersize=4)
+
+
+        plt.title(f"Algo3 Toolpath Generation - Layer {layer_to_process_idx} ({os.path.basename(stl_file_path)})")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        # # Get unique labels for legend (Removed)
+        # handles, labels = plt.gca().get_legend_handles_labels()
+        # by_label = dict(zip(labels, handles))
+        # plt.legend(by_label.values(), by_label.keys(), fontsize='small')
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.tight_layout()
+        plt.show()
+
+    except ImportError:
+        print("\nInstall matplotlib to visualize the results: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during visualization: {e}")
+
+
+def visualize_resampled_path(
+    resampled_path: List[ShapelyPoint],
+    segment_length: float,
+    layer_to_process_idx: int,
+    stl_file_path: str
+):
+    """Visualizes the resampled path with points marked."""
+    print("\n--- Visualizing Resampled Path ---")
+    if not resampled_path:
+        print("No resampled path to visualize.")
+        return
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')
+
+        # Plot resampled path
+        tp_x = [p.x for p in resampled_path]
+        tp_y = [p.y for p in resampled_path]
+        ax.plot(tp_x, tp_y, 'r-', linewidth=0.8, label='Resampled Path')
+        ax.plot(tp_x, tp_y, 'r.', markersize=4, label='Resampled Points') # Mark points
+        ax.plot(tp_x[0], tp_y[0], 'go', markersize=8, label='Start') # Mark start
+        ax.plot(tp_x[-1], tp_y[-1], 'mo', markersize=8, label='End')   # Mark end
+
+        plt.title(f"Resampled Toolpath (Seg Len ~{segment_length:.3f}mm) - Layer {layer_to_process_idx} ({os.path.basename(stl_file_path)})")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        plt.legend(fontsize='small')
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.tight_layout()
+        plt.show()
+
+    except ImportError:
+        print("\nInstall matplotlib to visualize the results: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during visualization: {e}")
+
+
+#-----------------------------------------------------------------------------
 # Main Execution Logic
 #-----------------------------------------------------------------------------
 if __name__ == '__main__':
@@ -669,26 +830,26 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
 
 
-    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
-
-    #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
-    #stl_file_path = os.path.join("models", "t-shape.stl")
-    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
-    #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
+    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    #stl_file_path = os.path.join("models", "wrench.stl")
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    #stl_file_path = os.path.join("models", "u-shape.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
+    #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+
+    #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
+    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
+    #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
 
 
 
-    stl_file_path = os.path.join("models", "wrench.stl")
     #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
 
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-    #stl_file_path = os.path.join("models", "u-shape.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
@@ -837,75 +998,39 @@ if __name__ == '__main__':
     # The sub-paths from rasterization should ideally form a connected graph
     print("\n--- Connecting Sub-paths ---")
     final_toolpath = connect_sub_paths(sub_paths) # Use the existing linear scan connector
-    print(f"Total points in final toolpath: {len(final_toolpath)}")
+    print(f"Total points in connected toolpath: {len(final_toolpath)}")
 
-    # Path to visualize is the result of the connection
-    path_to_visualize = final_toolpath
+    # --- 6b. Optional Path Resampling ---
+    resampled_toolpath = None # Initialize
+    if config.get('enable_resampling', False):
+        segment_length = config.get('resampling_segment_length', 0.5)
+        resampled_toolpath = resample_path_uniformly(final_toolpath, segment_length=segment_length)
+        path_to_visualize = resampled_toolpath # Visualize the resampled path in the main plot
+    else:
+        # Path to visualize is the result of the connection if resampling is disabled
+        path_to_visualize = final_toolpath
 
 
-    # --- 7. Optional: Visualize ---
+    # --- 7. Optional: Visualize Main Results ---
     if config.get('visualize_algo3_results', True):
-        print("\n--- Visualizing Results ---")
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np # Import numpy for linspace
+         visualize_final_toolpath(
+              shapely_polygon,
+              offset_results,
+              path_to_visualize,
+              layer_to_process_idx,
+              stl_file_path
+         )
 
-            plt.figure(figsize=(10, 10))
-            ax = plt.gca()
-            ax.set_aspect('equal', adjustable='box')
+    # --- 8. Optional: Visualize Resampled Path Separately ---
+    if resampled_toolpath and config.get('visualize_resampled_path', True): # Add new config flag if needed
+         segment_length = config.get('resampling_segment_length', 0.5) # Get length again for title
+         visualize_resampled_path(
+              resampled_toolpath,
+              segment_length,
+              layer_to_process_idx,
+              stl_file_path
+         )
 
-            # Plot original Shapely polygon
-            orig_x, orig_y = shapely_polygon.exterior.xy
-            ax.plot(orig_x, orig_y, 'k-', label=f'Original Polygon (Layer {layer_to_process_idx})', linewidth=1.5)
-            for interior in shapely_polygon.interiors:
-                int_x, int_y = interior.xy
-                ax.plot(int_x, int_y, 'k-', linewidth=1.5)
-
-            # Plot generated offset contours (from offset_results for clarity)
-            colors = plt.cm.viridis(np.linspace(0, 1, len(offset_results)))
-            for i, level_list in enumerate(offset_results):
-                 for contour in level_list:
-                     # Use the cached LineString for plotting coordinates
-                     if contour._line and not contour._line.is_empty:
-                         x, y = contour._line.xy
-                         ax.plot(x, y, color=colors[i], linestyle='--', linewidth=0.8, label=f'Offset Level {i}' if 'Offset' not in plt.gca().get_legend_handles_labels()[1] else "")
-
-
-            # Plot final toolpath (potentially optimized)
-            if path_to_visualize:
-                # Extract coordinates directly from Shapely Points
-                tp_x = [p.x for p in path_to_visualize]
-                tp_y = [p.y for p in path_to_visualize]
-                ax.plot(tp_x, tp_y, 'b-', marker='.', markersize=2, linewidth=1.0, label='Final Toolpath')
-                ax.plot(tp_x[0], tp_y[0], 'go', markersize=6, label='Start') # Mark start
-                ax.plot(tp_x[-1], tp_y[-1], 'ro', markersize=6, label='End')   # Mark end
-
-            # Plot breakpoints and connecting segments (optional, can be noisy)
-            # for level_list in contours_with_breaks:
-            #     for contour in level_list:
-            #         # p1, p2, p1_proj, p2_proj are ShapelyPoints
-            #         for p1, p2, p1_proj, p2_proj in contour.breakpoints:
-            #             ax.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'g:', linewidth=0.7)
-            #             ax.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'm:', linewidth=0.7)
-            #             ax.plot(p1.x, p1.y, 'gx', markersize=4)
-            #             ax.plot(p2.x, p2.y, 'mx', markersize=4)
-
-
-            plt.title(f"Algo3 Toolpath Generation - Layer {layer_to_process_idx} ({os.path.basename(stl_file_path)})")
-            plt.xlabel("X (mm)")
-            plt.ylabel("Y (mm)")
-            # # Get unique labels for legend (Removed)
-            # handles, labels = plt.gca().get_legend_handles_labels()
-            # by_label = dict(zip(labels, handles))
-            # plt.legend(by_label.values(), by_label.keys(), fontsize='small')
-            plt.grid(True, linestyle=':', alpha=0.6)
-            plt.tight_layout()
-            plt.show()
-
-        except ImportError:
-            print("\nInstall matplotlib to visualize the results: pip install matplotlib")
-        except Exception as e:
-            print(f"\nError during visualization: {e}")
 
     print("\nProcessing finished.")
 
