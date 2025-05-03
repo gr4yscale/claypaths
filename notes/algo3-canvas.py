@@ -446,7 +446,7 @@ def create_sub_paths_via_rasterization(
     img_width = int(np.ceil(width_mm / resolution))
     img_height = int(np.ceil(height_mm / resolution))
 
-    if img_width <= 0 or img_height <= 0 or img_width * img_height > 50_000_000: # Safety limit
+    if img_width <= 0 or img_height <= 0 or img_width * img_height > 500_000_000: # Safety limit
         print(f"Raster Sub-path Creation: Image size too large or invalid ({img_width}x{img_height}). Skipping.")
         return []
 
@@ -551,9 +551,9 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
 
     # Tolerance for comparing floating point coordinates
     # Should be slightly larger than 1/CLIPPER_SCALE to account for float errors.
-    CONNECT_TOLERANCE = 1e-3 # A previously used reasonable value
+    #CONNECT_TOLERANCE = 1e-2 # A previously used reasonable value
 
-    #CONNECT_TOLERANCE = 0.1 # Use the last set value, adjust if needed
+    CONNECT_TOLERANCE = 0.1 # Use the last set value, adjust if needed
 
     while remaining_sub_paths:
         current_end_point = global_path[-1]
