@@ -2,7 +2,7 @@ import math
 import copy
 import os
 import sys
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Set
 
 # Add project root to sys.path to allow importing project modules
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -13,19 +13,9 @@ if project_root not in sys.path:
 import pyclipper
 from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint
 from shapely.strtree import STRtree
-import numpy as np
-try:
-    import cv2 # For image processing
-    from scipy.ndimage import gaussian_filter # For Gaussian blur
-    cv2_available = True
-except ImportError:
-    cv2_available = False
-    print("Warning: OpenCV (cv2) or SciPy not found. Rasterization optimization will be skipped.")
-    # Define dummy gaussian_filter if scipy is missing but cv2 might be present (less likely scenario)
-    if 'gaussian_filter' not in locals():
-        def gaussian_filter(img, sigma):
-            print("Warning: SciPy not found, cannot apply Gaussian blur.")
-            return img
+import numpy as np # Keep numpy for now, might be used elsewhere
+
+# Removed cv2 and scipy imports
 
 
 # Import project modules
@@ -37,92 +27,59 @@ from src.config import load_config, get_config
 CLIPPER_SCALE = 10000.0
 
 #-----------------------------------------------------------------------------
-# 1. Data Structures
+# 1. Data Structures (Using Shapely Point)
 #-----------------------------------------------------------------------------
 
-class Point:
-    """Represents a 2D point."""
-    def __init__(self, x: float, y: float):
-        self.x = x
-        self.y = y
+# Custom Point class removed, using shapely.geometry.Point aliased as ShapelyPoint
 
-    def __eq__(self, other):
-        if not isinstance(other, Point):
-            return NotImplemented
-        # Use tolerance for floating point comparison
-        return math.isclose(self.x, other.x) and math.isclose(self.y, other.y)
-
-    def __repr__(self):
-        return f"Point({self.x:.3f}, {self.y:.3f})"
-
-    def distance_to(self, other: 'Point') -> float:
-        """Calculates Euclidean distance to another point."""
-        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
+# Tolerance for point equality checks
+POINT_EQUALITY_TOLERANCE = 1e-9
 
 class Segment:
-    """Represents a line segment defined by two points."""
-    def __init__(self, p1: Point, p2: Point):
+    """Represents a line segment defined by two Shapely Points."""
+    def __init__(self, p1: ShapelyPoint, p2: ShapelyPoint):
         self.p1 = p1
         self.p2 = p2
+        self._line = ShapelyLineString([p1, p2]) # Cache LineString representation
 
     def length(self) -> float:
         """Calculates the length of the segment."""
-        return self.p1.distance_to(self.p2)
+        # return self.p1.distance(self.p2) # Direct distance
+        return self._line.length # Use cached LineString length
 
     def __repr__(self):
-        return f"Segment({self.p1}, {self.p2})"
+        # Format Shapely points for representation
+        p1_repr = f"ShapelyPoint({self.p1.x:.3f}, {self.p1.y:.3f})"
+        p2_repr = f"ShapelyPoint({self.p2.x:.3f}, {self.p2.y:.3f})"
+        return f"Segment({p1_repr}, {p2_repr})"
 
-    def point_projection(self, p: Point) -> Point:
-        """Projects a point onto the infinite line defined by the segment."""
-        ap = (p.x - self.p1.x, p.y - self.p1.y)
-        ab = (self.p2.x - self.p1.x, self.p2.y - self.p1.y)
-        ab2 = ab[0]**2 + ab[1]**2
-        if ab2 == 0: # Segment has zero length
-            return self.p1
-        ap_dot_ab = ap[0] * ab[0] + ap[1] * ab[1]
-        t = ap_dot_ab / ab2
-        # Clamp t to [0, 1] to project onto the segment itself, not the infinite line
-        # t = max(0, min(1, t))
-        # Note: Algorithm 2 seems to project onto the infinite line based on context
-        proj_x = self.p1.x + t * ab[0]
-        proj_y = self.p1.y + t * ab[1]
-        return Point(proj_x, proj_y)
+    def point_projection(self, p: ShapelyPoint) -> ShapelyPoint:
+        """Projects a point onto the infinite line defined by the segment using Shapely."""
+        # Project point p onto the LineString representing the segment
+        projected_point = self._line.interpolate(self._line.project(p))
+        return projected_point
 
-    def distance_to_point(self, p: Point) -> float:
-         """Calculates the shortest distance from a point to the line segment."""
-         proj = self.point_projection(p)
-         # Check if projection is within the segment bounds
-         ap = (p.x - self.p1.x, p.y - self.p1.y)
-         ab = (self.p2.x - self.p1.x, self.p2.y - self.p1.y)
-         ab2 = ab[0]**2 + ab[1]**2
-         if ab2 == 0: return p.distance_to(self.p1)
-         ap_dot_ab = ap[0] * ab[0] + ap[1] * ab[1]
-         t = ap_dot_ab / ab2
-
-         if t < 0.0:
-             closest_point = self.p1
-         elif t > 1.0:
-             closest_point = self.p2
-         else:
-             closest_point = proj # Projection lies on the segment
-
-         return p.distance_to(closest_point)
+    def distance_to_point(self, p: ShapelyPoint) -> float:
+         """Calculates the shortest distance from a point to the line segment using Shapely."""
+         return p.distance(self._line)
 
 
 class Contour:
-    """Represents a closed contour (polygon)."""
-    def __init__(self, points: List[Point]):
+    """Represents a closed contour using Shapely Points."""
+    def __init__(self, points: List[ShapelyPoint]):
         if not points:
             raise ValueError("Contour must have points.")
         # Ensure contour is closed if it isn't already
-        if points[0] != points[-1]:
+        # Use distance check with tolerance for Shapely points
+        if points[0].distance(points[-1]) > POINT_EQUALITY_TOLERANCE:
             points.append(points[0])
         self.points = points
+        self._line = ShapelyLineString(points) # Cache LineString representation
         self.level: int = -1 # Level assigned by re-leveling
         self.type: Optional[int] = None # 0 for outer, >0 for hole ID, None for intermediate offsets
         self.is_hole: bool = False # Flag if it originated from a hole
         self.original_level: int = -1 # Level assigned by the offsetting algorithm
-        self.breakpoints: List[Tuple[Point, Point, Point, Point]] = [] # Stores (p1, p2, p1_proj, p2_proj)
+        self.breakpoints: List[Tuple[ShapelyPoint, ShapelyPoint, ShapelyPoint, ShapelyPoint]] = [] # Stores (p1, p2, p1_proj, p2_proj)
         self.connecting_segments: List[Segment] = [] # Segments added between breakpoints
 
     def __repr__(self):
@@ -131,49 +88,82 @@ class Contour:
 
     def get_segments(self) -> List[Segment]:
         """Returns the list of segments forming the contour."""
+        # Ensure points list is valid for creating segments
+        if len(self.points) < 2:
+            return []
         return [Segment(self.points[i], self.points[i+1]) for i in range(len(self.points) - 1)]
 
     def length(self) -> float:
-        """Calculates the total length (perimeter) of the contour."""
-        return sum(seg.length() for seg in self.get_segments())
+        """Calculates the total length (perimeter) of the contour using Shapely."""
+        return self._line.length
 
-    def get_point_at_dist(self, distance: float) -> Tuple[Optional[Point], Optional[Segment], int]:
-        """Finds the point and segment at a given distance along the contour from the start."""
-        accumulated_length = 0.0
+    def get_point_at_dist(self, distance: float) -> Tuple[Optional[ShapelyPoint], Optional[Segment], int]:
+        """Finds the point and segment at a given distance along the contour using Shapely."""
+        if distance < 0 or distance > self.length() + POINT_EQUALITY_TOLERANCE:
+             print(f"Warning: Requested distance {distance:.3f} is outside contour length {self.length():.3f}")
+             # Clamp distance to valid range
+             distance = max(0, min(self.length(), distance))
+             # return None, None, -1 # Or clamp/wrap distance? Let's interpolate clamped value.
+
+        # Use Shapely's interpolate method
+        interpolated_point = self._line.interpolate(distance)
+
+        # Find which original segment this point lies on or is closest to its end
         segments = self.get_segments()
+        min_dist_to_segment_end = float('inf')
+        containing_segment_idx = -1
+        containing_segment = None
+
+        accumulated_length = 0.0
         for i, seg in enumerate(segments):
             seg_len = seg.length()
-            if accumulated_length + seg_len >= distance - 1e-9: # Tolerance for float comparison
-                remaining_dist = distance - accumulated_length
-                if seg_len == 0: return seg.p1, seg, i # Handle zero-length segment
-                ratio = remaining_dist / seg_len
-                # Interpolate point
-                x = seg.p1.x + ratio * (seg.p2.x - seg.p1.x)
-                y = seg.p1.y + ratio * (seg.p2.y - seg.p1.y)
-                return Point(x, y), seg, i
+            # Check if the distance falls within this segment's range along the contour
+            if accumulated_length <= distance <= accumulated_length + seg_len + POINT_EQUALITY_TOLERANCE:
+                 containing_segment = seg
+                 containing_segment_idx = i
+                 break
             accumulated_length += seg_len
-        # Distance exceeds contour length (shouldn't happen for closed loop if dist < length)
-        return None, None, -1
+        else:
+             # If distance is very close to total length, it's on the last segment
+             if segments and math.isclose(distance, self.length()):
+                 containing_segment = segments[-1]
+                 containing_segment_idx = len(segments) - 1
+
+        if containing_segment is None:
+             print(f"Warning: Could not reliably determine segment for distance {distance:.3f}")
+             # Fallback: find closest segment geometrically (less accurate for 'along contour')
+             min_geom_dist = float('inf')
+             for i, seg in enumerate(segments):
+                 d = interpolated_point.distance(seg._line)
+                 if d < min_geom_dist:
+                     min_geom_dist = d
+                     containing_segment = seg
+                     containing_segment_idx = i
+
+
+        return interpolated_point, containing_segment, containing_segment_idx
 
 class SubPath:
-    """Represents an open path derived from breaking a contour."""
-    def __init__(self, points: List[Point]):
+    """Represents an open path using Shapely Points."""
+    def __init__(self, points: List[ShapelyPoint]):
         self.points = points
 
     def __repr__(self):
-        return f"SubPath(Points={len(self.points)})"
+        start_repr = f"({self.points[0].x:.1f},{self.points[0].y:.1f})" if self.points else "N/A"
+        end_repr = f"({self.points[-1].x:.1f},{self.points[-1].y:.1f})" if self.points else "N/A"
+        return f"SubPath(Points={len(self.points)}, Start={start_repr}, End={end_repr})"
 
 #-----------------------------------------------------------------------------
 # 2. Geometric Helper Functions (Basic Implementation)
-#    -> Recommend using Shapely for robust geometry operations
+#    -> Recommend using Shapely for robust geometry operations (Done)
 #-----------------------------------------------------------------------------
 
-def find_closest_segment_to_point(point: Point, target_contour: Contour) -> Tuple[Optional[Segment], float, int]:
+def find_closest_segment_to_point(point: ShapelyPoint, target_contour: Contour) -> Tuple[Optional[Segment], float, int]:
     """
-    Finds the segment in target_contour closest to the given point using Shapely for robust distance calculation.
+    Finds the segment in target_contour closest to the given Shapely point using Shapely for robust distance calculation.
 
     Args:
-        point: The query point.
+        point: The query ShapelyPoint.
         target_contour: The contour to search within.
 
     Returns:
@@ -186,25 +176,26 @@ def find_closest_segment_to_point(point: Point, target_contour: Contour) -> Tupl
         return None, float('inf'), -1
 
     # Use Shapely for robust distance calculation
+    # The target_contour._line is already a Shapely LineString
     try:
-        shapely_point = ShapelyPoint(point.x, point.y)
-        # Create LineString from contour points (excluding duplicate end point)
-        contour_coords = [(p.x, p.y) for p in target_contour.points[:-1]]
-        # Ensure at least two points for LineString
-        if len(contour_coords) < 2:
-             # Handle degenerate case (e.g., contour is just one point repeated)
-             if contour_coords:
-                 dist = point.distance_to(target_contour.points[0])
-                 segments = target_contour.get_segments()
-                 return segments[0] if segments else None, dist, 0 if segments else -1
+        # Ensure the contour's internal LineString is valid
+        if not target_contour._line or target_contour._line.is_empty:
+             # Attempt to recreate if necessary
+             if len(target_contour.points) >= 2:
+                 target_contour._line = ShapelyLineString(target_contour.points)
              else:
-                 return None, float('inf'), -1
+                 # Handle degenerate case
+                 if target_contour.points:
+                     dist = point.distance(target_contour.points[0])
+                     segments = target_contour.get_segments()
+                     return segments[0] if segments else None, dist, 0 if segments else -1
+                 else:
+                     return None, float('inf'), -1
 
-        shapely_contour_line = ShapelyLineString(contour_coords)
-        min_dist_shapely = shapely_point.distance(shapely_contour_line)
+        min_dist_shapely = point.distance(target_contour._line)
     except Exception as e:
-        print(f"Error creating Shapely objects or calculating distance: {e}")
-        # Fallback to simple iteration if Shapely fails
+        print(f"Error calculating distance with Shapely: {e}")
+        # Fallback calculation needed? Or rely on segment iteration below?
         min_dist_shapely = float('inf')
 
 
@@ -218,10 +209,11 @@ def find_closest_segment_to_point(point: Point, target_contour: Contour) -> Tupl
         return None, min_dist_shapely, -1
 
     for i, seg in enumerate(segments):
-        # Use the segment's own distance calculation method
-        dist_to_segment = seg.distance_to_point(point)
+        # Use the segment's Shapely-based distance calculation method
+        dist_to_segment = seg.distance_to_point(point) # This now uses Shapely internally
 
-        # Find the segment whose distance is closest to Shapely's minimum distance
+        # Find the segment whose distance is closest to Shapely's minimum distance to the whole contour
+        # This helps identify the specific segment even if the point is near a vertex
         diff = abs(dist_to_segment - min_dist_shapely)
         if diff < min_segment_dist_diff:
             min_segment_dist_diff = diff
@@ -250,17 +242,27 @@ def shapely_polygon_to_clipper(polygon: ShapelyPolygon) -> List[List[Tuple[int, 
 
 def clipper_path_to_contour(path: List[Tuple[int, int]]) -> Contour:
     """Converts a Pyclipper path (scaled integers) back to a Contour object."""
-    points = [Point(x / CLIPPER_SCALE, y / CLIPPER_SCALE) for x, y in path]
+    # Use ShapelyPoint directly
+    points = [ShapelyPoint(x / CLIPPER_SCALE, y / CLIPPER_SCALE) for x, y in path]
     # Ensure the contour is closed for the Contour class logic
     if not points or len(points) < 3:
         return Contour([]) # Return empty if not enough points
     if points[0] != points[-1]:
         points.append(points[0])
-    return Contour(points)
+    # Return Contour object initialized with Shapely Points
+    return Contour([ShapelyPoint(p.x, p.y) for p in points])
 
 def clipper_paths_to_contours(paths: List[List[Tuple[int, int]]]) -> List[Contour]:
-    """Converts multiple Pyclipper paths to a list of Contour objects."""
-    return [clipper_path_to_contour(path) for path in paths if len(path) >= 3]
+    """Converts multiple Pyclipper paths to a list of Contour objects (using Shapely Points)."""
+    contours = []
+    for path in paths:
+        if len(path) >= 3: # Need at least 3 points for a valid polygon/contour
+            points = [ShapelyPoint(x / CLIPPER_SCALE, y / CLIPPER_SCALE) for x, y in path]
+            # Ensure closure for Contour class logic
+            if points[0].distance(points[-1]) > POINT_EQUALITY_TOLERANCE:
+                 points.append(points[0])
+            contours.append(Contour(points))
+    return contours
 
 
 #-----------------------------------------------------------------------------
@@ -334,19 +336,15 @@ def re_level_contours(offset_results: List[List[Contour]], initial_outer: List[C
             parent_type = None
             parent_is_hole = False
 
-            # Calculate centroid of current contour
-            if not contour.points: continue
-            centroid_x = sum(p.x for p in contour.points) / len(contour.points)
-            centroid_y = sum(p.y for p in contour.points) / len(contour.points)
-            current_centroid = Point(centroid_x, centroid_y)
+            # Calculate centroid of current contour using Shapely
+            if not contour._line or contour._line.is_empty: continue
+            current_centroid = contour._line.centroid # Use Shapely's centroid
 
             # Find the closest contour in the *previous* level
             for prev_contour in prev_level_contours:
-                if not prev_contour.points: continue
-                prev_centroid_x = sum(p.x for p in prev_contour.points) / len(prev_contour.points)
-                prev_centroid_y = sum(p.y for p in prev_contour.points) / len(prev_contour.points)
-                prev_centroid = Point(prev_centroid_x, prev_centroid_y)
-                dist = current_centroid.distance_to(prev_centroid)
+                if not prev_contour._line or prev_contour._line.is_empty: continue
+                prev_centroid = prev_contour._line.centroid # Use Shapely's centroid
+                dist = current_centroid.distance(prev_centroid)
 
                 if dist < min_dist:
                     min_dist = dist
@@ -454,21 +452,22 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
             start_offset_ratio = ((layer_index + j) % n_layer_period) / n_layer_period
             start_dist = start_offset_ratio * contour_len
 
+            # get_point_at_dist now returns ShapelyPoint
             p1, seg_p1, seg_p1_idx = contour.get_point_at_dist(start_dist)
-            if p1 is None or seg_p1 is None:
-                print(f"Warning: Could not find p1 at dist {start_dist:.2f} on contour {j} level {i}")
-                continue # Should not happen on valid closed contour
+            if p1 is None or seg_p1 is None: # Check if interpolation failed
+                print(f"Warning: Could not interpolate p1 at dist {start_dist:.2f} on contour {j} level {i}")
+                continue
 
             # --- Step 2 & 3: Find p2 at distance 'line_spacing' from p1 ---
             # Find p2 by walking 'line_spacing' distance from p1 along the contour
             p2_dist = (start_dist + line_spacing) % contour_len # Wrap around contour
             p2, seg_p2, seg_p2_idx = contour.get_point_at_dist(p2_dist)
-            if p2 is None or seg_p2 is None:
-                print(f"Warning: Could not find p2 at dist {p2_dist:.2f} on contour {j} level {i}")
+            if p2 is None or seg_p2 is None: # Check if interpolation failed
+                print(f"Warning: Could not interpolate p2 at dist {p2_dist:.2f} on contour {j} level {i}")
                 continue
 
-            # Ensure p1 and p2 are distinct points
-            if p1.distance_to(p2) < 1e-6:
+            # Ensure p1 and p2 are distinct points using Shapely distance
+            if p1.distance(p2) < POINT_EQUALITY_TOLERANCE:
                 # print(f"Debug: p1 and p2 are too close on contour {j} level {i}. Skipping breakpoint.")
                 continue
 
@@ -481,9 +480,9 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
             # corrective action (e.g., how far to advance p1) is unclear.
 
             # --- Step 4, 5, 6: Find closest valid target segment using Spatial Index ---
-            shapely_p1 = ShapelyPoint(p1.x, p1.y)
+            # p1 is already a ShapelyPoint
             search_radius = line_spacing * 3.0 # Search radius around p1
-            query_geom = shapely_p1.buffer(search_radius)
+            query_geom = p1.buffer(search_radius)
             nearby_indices = tree.query(query_geom) # Indices in geometries_for_index
 
             valid_candidates = []
@@ -493,8 +492,8 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
 
                 # Filter: Must be in a subsequent level (level > i) and match type
                 if cand_target_contour.level > i and cand_target_contour.type == contour.type:
-                    # Calculate exact distance using Shapely
-                    dist_sl = shapely_p1.distance(shapely_line)
+                    # Calculate exact distance using Shapely (p1 is ShapelyPoint)
+                    dist_sl = p1.distance(shapely_line)
                     valid_candidates.append({
                         'distance': dist_sl,
                         'level': cand_target_contour.level, # Level of the target contour
@@ -526,22 +525,25 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
                  continue # Could not find a suitable target segment
 
             # --- Step 7: Find projected point p1_proj of p1 onto the target segment sl ---
-            # Use the original Segment object's projection method
-            p1_proj = closest_target_seg.point_projection(p1)
+            # Use the Segment's Shapely-based projection method
+            p1_proj = closest_target_seg.point_projection(p1) # p1 is ShapelyPoint
 
             # --- Step 8: Find p2_proj (Simplified Approach) ---
             # Project p2 onto the *chosen* target contour (target_contour_k).
             # Use the efficient find_closest_segment_to_point restricted to this contour.
-            seg_p2_target, dist_p2_target, _ = find_closest_segment_to_point(p2, target_contour_k)
+            seg_p2_target, dist_p2_target, _ = find_closest_segment_to_point(p2, target_contour_k) # p2 is ShapelyPoint
             if seg_p2_target is None:
                 # This should ideally not happen if target_contour_k is valid
-                print(f"Warning: Could not find target segment for point {p2} near chosen target contour L{target_contour_k.level}")
+                print(f"Warning: Could not find target segment for point p2 near chosen target contour L{target_contour_k.level}")
                 continue
-            p2_proj = seg_p2_target.point_projection(p2)
+            p2_proj = seg_p2_target.point_projection(p2) # p2 is ShapelyPoint
 
-            # Ensure projections are valid
-            if p1_proj is None or p2_proj is None:
-                 print(f"Warning: Failed to calculate projections for breakpoint on contour {j} level {i}")
+            # Ensure projections are valid (Shapely points are never None, check coordinates if needed)
+            # Check if projection resulted in a valid point (e.g., not NaN if inputs were bad)
+            if not (p1_proj and p2_proj and \
+                    not math.isnan(p1_proj.x) and not math.isnan(p1_proj.y) and \
+                    not math.isnan(p2_proj.x) and not math.isnan(p2_proj.y)):
+                 print(f"Warning: Invalid projection calculated for breakpoint on contour {j} level {i}")
                  continue
 
             # --- Step 9: Store breakpoint information and connecting segments ---
@@ -592,24 +594,25 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
 
             # Simpler approach: Identify segments that contain p1 or p2 from breakpoints
             interrupted_segment_indices = set()
-            break_points_on_this_contour = set() # Store (x,y) tuples
+            # Store Shapely Points directly for easier comparison later
+            break_points_on_this_contour: Set[ShapelyPoint] = set()
 
             for bp_info in contour.breakpoints:
-                p1, p2, _, _ = bp_info
-                break_points_on_this_contour.add((p1.x, p1.y))
-                break_points_on_this_contour.add((p2.x, p2.y))
+                p1, p2, _, _ = bp_info # These are ShapelyPoints now
+                break_points_on_this_contour.add(p1)
+                break_points_on_this_contour.add(p2)
 
                 # Find which segments p1 and p2 lie on (or are close to)
                 for k, seg in enumerate(contour.get_segments()):
-                    # Check if p1 or p2 is very close to this segment's endpoints or interior
-                    if seg.distance_to_point(p1) < 1e-6:
+                    # Use Shapely distance check
+                    if seg.distance_to_point(p1) < POINT_EQUALITY_TOLERANCE:
                          interrupted_segment_indices.add(k)
-                    if seg.distance_to_point(p2) < 1e-6:
+                    if seg.distance_to_point(p2) < POINT_EQUALITY_TOLERANCE:
                          interrupted_segment_indices.add(k)
 
 
             # Traverse the contour point by point, creating subpaths between breaks
-            current_sub_path_points: List[Point] = []
+            current_sub_path_points: List[ShapelyPoint] = []
             if not all_points_on_contour: continue
 
             start_index = 0
@@ -620,13 +623,14 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
                 current_point = all_points_on_contour[current_idx]
                 current_segment_idx = (current_idx - 1 + num_points) % num_points # Segment ending at current_point
 
-                # Add point to current subpath
-                if not current_sub_path_points or current_point != current_sub_path_points[-1]:
+                # Add point to current subpath, checking for duplicates using distance
+                if not current_sub_path_points or current_point.distance(current_sub_path_points[-1]) > POINT_EQUALITY_TOLERANCE:
                      current_sub_path_points.append(current_point)
 
                 # Check if the segment *ending* at this point was a break segment
-                # Or if the point itself is a breakpoint
-                is_break_point = (current_point.x, current_point.y) in break_points_on_this_contour
+                # Or if the point itself is a breakpoint (check set membership)
+                # Need to iterate through set for tolerance check if hash isn't reliable enough
+                is_break_point = any(current_point.distance(bp) < POINT_EQUALITY_TOLERANCE for bp in break_points_on_this_contour)
                 is_break_segment = current_segment_idx in interrupted_segment_indices
 
                 # If we hit a break point/segment AND the subpath is not empty, end the current subpath
@@ -635,7 +639,7 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
                     # Avoid creating tiny subpaths if breaks are adjacent
                     next_idx = (current_idx + 1) % num_points
                     next_point = all_points_on_contour[next_idx]
-                    next_point_is_break = (next_point.x, next_point.y) in break_points_on_this_contour
+                    next_point_is_break = any(next_point.distance(bp) < POINT_EQUALITY_TOLERANCE for bp in break_points_on_this_contour)
                     next_segment_idx = current_idx
                     next_segment_is_break = next_segment_idx in interrupted_segment_indices
 
@@ -648,11 +652,14 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
             # Add any remaining points after the loop
             if len(current_sub_path_points) > 1:
                  # Check if it closes on itself and matches the first subpath start
-                 first_subpath_start = list_sub_paths[0].points[0] if list_sub_paths else None
+                 first_subpath_start = list_sub_paths[0].points[0] if list_sub_paths and list_sub_paths[0].points else None
                  last_subpath_end = current_sub_path_points[-1] if current_sub_path_points else None
-                 if first_subpath_start and last_subpath_end and first_subpath_start == last_subpath_end:
+                 # Use distance check for merging
+                 if first_subpath_start and last_subpath_end and first_subpath_start.distance(last_subpath_end) < POINT_EQUALITY_TOLERANCE:
                       # Merge with first subpath
-                      list_sub_paths[0].points = current_sub_path_points + list_sub_paths[0].points[1:]
+                      # Ensure no duplicate point is added during merge
+                      merged_points = current_sub_path_points + list_sub_paths[0].points[1:]
+                      list_sub_paths[0] = SubPath(merged_points) # Create new SubPath object
                  else:
                       list_sub_paths.append(SubPath(current_sub_path_points))
 
@@ -664,22 +671,23 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
             all_connecting_segments.extend(contour.connecting_segments)
 
     for seg in all_connecting_segments:
-        # Ensure connecting segments are not zero length
-        if not math.isclose(seg.p1.x, seg.p2.x) or not math.isclose(seg.p1.y, seg.p2.y):
-             list_sub_paths.append(SubPath([seg.p1, seg.p2]))
+        # Ensure connecting segments are not zero length using distance
+        if seg.length() > POINT_EQUALITY_TOLERANCE:
+             list_sub_paths.append(SubPath([seg.p1, seg.p2])) # p1, p2 are ShapelyPoints
 
+    # Final filter for any potentially empty subpaths created
+    list_sub_paths = [sp for sp in list_sub_paths if sp.points]
 
     return list_sub_paths
-
 
 #-----------------------------------------------------------------------------
 # 6. Generating continuous path (Connecting Sub-paths) - Improved with Spatial Index
 #-----------------------------------------------------------------------------
 
-def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
+def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     """
-    Connects sub-paths into a single continuous global toolpath using a spatial index
-    for potentially faster endpoint matching.
+    Connects sub-paths (containing Shapely Points) into a single continuous global toolpath
+    using a spatial index for potentially faster endpoint matching.
 
     Args:
         sub_paths: A list of SubPath objects.
@@ -720,7 +728,7 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
     # --- End Spatial Index Build ---
 
     used_indices = set() # Stores indices *from the filtered_sub_paths list*
-    global_path: List[Point] = []
+    global_path: List[ShapelyPoint] = []
 
     # Start with the first valid path (index 0 in filtered list)
     start_idx_filtered = 0
@@ -732,7 +740,8 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
 
     # Tolerance for comparing floating point coordinates
     # Should be slightly larger than 1/CLIPPER_SCALE to account for float errors.
-    CONNECT_TOLERANCE = 1e-3 # 0.001 mm (1 micrometer) - A more reasonable value
+    CONNECT_TOLERANCE = 0.1
+    #CONNECT_TOLERANCE = 1e-3 # 0.001 mm (1 micrometer) - A more reasonable value
 
     while num_remaining > 0:
         current_end_point = global_path[-1]
@@ -756,8 +765,9 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
 
              # Check if the path corresponding to this endpoint is already used
              if path_idx_filtered not in used_indices:
-                 # Calculate exact distance
-                 dist = current_end_point.distance_to(Point(geom.x, geom.y))
+                 # Calculate exact distance using Shapely distance
+                 # geom is already a ShapelyPoint from endpoints_data
+                 dist = current_end_point.distance(geom)
                  # Check if within tolerance
                  if dist < min_dist:
                      # Store potential candidate info
@@ -825,7 +835,8 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
                         if path_idx_filtered not in used_indices:
                             # This is the closest unused endpoint
                             closest_fallback_filtered_idx = path_idx_filtered
-                            min_fallback_dist = current_end_point.distance_to(Point(geom.x, geom.y))
+                            # geom is already a ShapelyPoint
+                            min_fallback_dist = current_end_point.distance(geom)
                             fallback_reverse_needed = not is_start # Reverse if it's an end point
                             found_spatial_fallback = True
                         else:
@@ -865,11 +876,12 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
                 for i in range(num_valid_paths):
                     if i not in used_indices:
                         fallback_path = filtered_sub_paths[i]
-                        fb_start_point = fallback_path.points[0]
-                        fb_end_point = fallback_path.points[-1]
+                        fb_start_point = fallback_path.points[0] # ShapelyPoint
+                        fb_end_point = fallback_path.points[-1] # ShapelyPoint
 
-                        dist_to_fb_start = current_end_point.distance_to(fb_start_point)
-                        dist_to_fb_end = current_end_point.distance_to(fb_end_point)
+                        # Use Shapely distance
+                        dist_to_fb_start = current_end_point.distance(fb_start_point)
+                        dist_to_fb_end = current_end_point.distance(fb_end_point)
 
                         if dist_to_fb_start < min_linear_fallback_dist:
                             min_linear_fallback_dist = dist_to_fb_start
@@ -904,142 +916,6 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
         num_remaining = num_valid_paths - len(used_indices)
 
     return global_path
-
-
-#-----------------------------------------------------------------------------
-# 7. Path Optimization via Rasterization (Optional Post-processing)
-#-----------------------------------------------------------------------------
-
-def optimize_path_via_rasterization(
-    path: List[Point],
-    line_spacing: float,
-    resolution: float = 0.1, # mm per pixel
-    gaussian_sigma_factor: float = 1.5 # Sigma relative to line spacing in pixels
-) -> List[Point]:
-    """
-    Optimizes a toolpath using rasterization, Gaussian blur, and skeletonization.
-
-    Args:
-        path: The input toolpath as a list of Points.
-        line_spacing: The characteristic width of the toolpath (used for blur sigma).
-        resolution: The size of each pixel in millimeters.
-        gaussian_sigma_factor: Multiplier for line_spacing to determine Gaussian sigma.
-
-    Returns:
-        A new, potentially optimized, toolpath as a list of Points.
-    """
-    if not cv2_available:
-        print("Raster Optimization: Skipping because OpenCV (cv2) or SciPy is not installed.")
-        return path
-
-    if not path or len(path) < 2:
-        print("Raster Optimization: Path too short, returning original.")
-        return path
-
-    print(f"Raster Optimization: Starting with resolution {resolution} mm/pixel.")
-
-    # 1. Determine bounds and image size
-    min_x = min(p.x for p in path)
-    max_x = max(p.x for p in path)
-    min_y = min(p.y for p in path)
-    max_y = max(p.y for p in path)
-
-    padding = line_spacing * 3 # Add padding around the path
-    world_min_x = min_x - padding
-    world_min_y = min_y - padding
-    world_max_x = max_x + padding
-    world_max_y = max_y + padding
-
-    width_mm = world_max_x - world_min_x
-    height_mm = world_max_y - world_min_y
-
-    img_width = int(np.ceil(width_mm / resolution))
-    img_height = int(np.ceil(height_mm / resolution))
-
-    if img_width <= 0 or img_height <= 0 or img_width * img_height > 50_000_000: # Safety limit
-        print(f"Raster Optimization: Image size too large or invalid ({img_width}x{img_height}). Skipping.")
-        return path
-
-    print(f"Raster Optimization: Image size {img_width}x{img_height}.")
-
-    # 2. World-to-Image Transformation
-    def world_to_img(wx, wy):
-        ix = int((wx - world_min_x) / resolution)
-        iy = int((wy - world_min_y) / resolution)
-        # Clamp coordinates to be within image bounds
-        ix = max(0, min(img_width - 1, ix))
-        iy = max(0, min(img_height - 1, iy))
-        return ix, iy
-
-    # 3. Image-to-World Transformation
-    def img_to_world(ix, iy):
-        wx = world_min_x + (ix + 0.5) * resolution # Use pixel center
-        wy = world_min_y + (iy + 0.5) * resolution
-        return wx, wy
-
-    # 4. Rasterize the path
-    image = np.zeros((img_height, img_width), dtype=np.uint8)
-    for i in range(len(path) - 1):
-        p1 = path[i]
-        p2 = path[i+1]
-        ix1, iy1 = world_to_img(p1.x, p1.y)
-        ix2, iy2 = world_to_img(p2.x, p2.y)
-        # OpenCV uses (x, y) coordinates, which correspond to (col, row)
-        # Image shape is (rows, cols) = (height, width)
-        cv2.line(image, (ix1, iy1), (ix2, iy2), 255, thickness=1) # Draw white line
-
-    # 5. Apply Gaussian Blur
-    sigma_pixels = (line_spacing / resolution) * gaussian_sigma_factor
-    blurred_image = gaussian_filter(image.astype(float), sigma=sigma_pixels)
-    print(f"Raster Optimization: Applied Gaussian blur with sigma={sigma_pixels:.2f} pixels.")
-
-    # 6. Threshold the blurred image
-    # Use a threshold slightly above zero to capture the blurred area
-    threshold_value = np.max(blurred_image) * 0.1 # Example: 10% of max value
-    _, thresholded_image = cv2.threshold(blurred_image, threshold_value, 255, cv2.THRESH_BINARY)
-    thresholded_image = thresholded_image.astype(np.uint8)
-
-    # 7. Skeletonize
-    # Use cv2.ximgproc.thinning (requires opencv-contrib-python)
-    # Alternatively, use skimage.morphology.skeletonize
-    try:
-        # Note: THINNING_ZHANGSUEN expects white foreground on black background
-        skeleton = cv2.ximgproc.thinning(thresholded_image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-        print("Raster Optimization: Performed skeletonization.")
-    except AttributeError:
-        print("Raster Optimization: cv2.ximgproc.thinning not available (install opencv-contrib-python?). Skipping skeletonization.")
-        # Fallback: Use the thresholded image directly (less ideal)
-        skeleton = thresholded_image
-    except Exception as e:
-        print(f"Raster Optimization: Error during skeletonization: {e}. Skipping.")
-        skeleton = thresholded_image
-
-
-    # 8. Find contours of the skeleton
-    # Find external contours of the skeleton pixels
-    contours, _ = cv2.findContours(skeleton, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) # Get all points
-
-    if not contours:
-        print("Raster Optimization: No contours found after skeletonization. Returning original path.")
-        return path
-
-    # 9. Select the longest contour and convert back to world coordinates
-    longest_contour = max(contours, key=cv2.contourArea) # Use area as proxy for length here
-    optimized_path_pixels = longest_contour.reshape(-1, 2) # Reshape to list of [ix, iy]
-
-    optimized_path: List[Point] = []
-    for ix, iy in optimized_path_pixels:
-        wx, wy = img_to_world(ix, iy)
-        # Avoid adding duplicate consecutive points
-        if not optimized_path or not math.isclose(optimized_path[-1].x, wx) or not math.isclose(optimized_path[-1].y, wy):
-            optimized_path.append(Point(wx, wy))
-
-    print(f"Raster Optimization: Extracted path with {len(optimized_path)} points.")
-
-    # Optional: Simplify the resulting path (e.g., Ramer-Douglas-Peucker)
-    # ...
-
-    return optimized_path
 
 
 #-----------------------------------------------------------------------------
@@ -1086,7 +962,7 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
-    #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
+    stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
     #stl_file_path = os.path.join("models", "test", "ring.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
@@ -1094,13 +970,13 @@ if __name__ == '__main__':
     # testing (mine, freecad)
     #stl_file_path = os.path.join("models", "mine", "hex.stl")
 
-    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
+    stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     
     #confirmed working, simple models
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "cuboid.stl")
-    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
+    stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
     #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
     #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
@@ -1221,24 +1097,10 @@ if __name__ == '__main__':
     # --- 6. Connect Sub-paths ---
     print("\n--- Connecting Sub-paths ---")
     final_toolpath = connect_sub_paths(sub_paths)
-    print(f"Total points in connected toolpath: {len(final_toolpath)}")
+    print(f"Total points in final toolpath: {len(final_toolpath)}")
 
-    # --- 6b. Optional Raster Optimization ---
-    if config.get('optimize_via_rasterization', False): # Add this flag to config.yaml if desired
-        print("\n--- Optimizing Path via Rasterization ---")
-        raster_resolution = config.get('raster_resolution', 0.05) # e.g., 50 microns per pixel
-        raster_sigma_factor = config.get('raster_sigma_factor', 1.0)
-        optimized_toolpath = optimize_path_via_rasterization(
-            final_toolpath,
-            line_spacing,
-            resolution=raster_resolution,
-            gaussian_sigma_factor=raster_sigma_factor
-        )
-        print(f"Total points after raster optimization: {len(optimized_toolpath)}")
-        # Decide whether to use the optimized path for visualization/output
-        path_to_visualize = optimized_toolpath
-    else:
-        path_to_visualize = final_toolpath
+    # Path to visualize is the result of the connection
+    path_to_visualize = final_toolpath
 
 
     # --- 7. Optional: Visualize ---
@@ -1263,14 +1125,15 @@ if __name__ == '__main__':
             colors = plt.cm.viridis(np.linspace(0, 1, len(offset_results)))
             for i, level_list in enumerate(offset_results):
                  for contour in level_list:
-                     if contour.points:
-                         x = [p.x for p in contour.points]
-                         y = [p.y for p in contour.points]
+                     # Use the cached LineString for plotting coordinates
+                     if contour._line and not contour._line.is_empty:
+                         x, y = contour._line.xy
                          ax.plot(x, y, color=colors[i], linestyle='--', linewidth=0.8, label=f'Offset Level {i}' if 'Offset' not in plt.gca().get_legend_handles_labels()[1] else "")
 
 
             # Plot final toolpath (potentially optimized)
             if path_to_visualize:
+                # Extract coordinates directly from Shapely Points
                 tp_x = [p.x for p in path_to_visualize]
                 tp_y = [p.y for p in path_to_visualize]
                 ax.plot(tp_x, tp_y, 'b-', marker='.', markersize=2, linewidth=1.0, label='Final Toolpath')
@@ -1280,6 +1143,7 @@ if __name__ == '__main__':
             # Plot breakpoints and connecting segments (optional, can be noisy)
             # for level_list in contours_with_breaks:
             #     for contour in level_list:
+            #         # p1, p2, p1_proj, p2_proj are ShapelyPoints
             #         for p1, p2, p1_proj, p2_proj in contour.breakpoints:
             #             ax.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'g:', linewidth=0.7)
             #             ax.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'm:', linewidth=0.7)
