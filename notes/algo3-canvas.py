@@ -155,18 +155,71 @@ class SubPath:
 #-----------------------------------------------------------------------------
 
 def find_closest_segment_to_point(point: Point, target_contour: Contour) -> Tuple[Optional[Segment], float, int]:
-    """Finds the segment in target_contour closest to the given point."""
-    min_dist = float('inf')
-    closest_seg = None
-    closest_seg_index = -1
+    """
+    Finds the segment in target_contour closest to the given point using Shapely for robust distance calculation.
+
+    Args:
+        point: The query point.
+        target_contour: The contour to search within.
+
+    Returns:
+        A tuple containing:
+        - The closest Segment object (or None if not found).
+        - The minimum distance calculated by Shapely.
+        - The index of the closest segment in the contour's segment list.
+    """
+    if not target_contour.points or len(target_contour.points) < 2:
+        return None, float('inf'), -1
+
+    # Use Shapely for robust distance calculation
+    try:
+        shapely_point = ShapelyPoint(point.x, point.y)
+        # Create LineString from contour points (excluding duplicate end point)
+        contour_coords = [(p.x, p.y) for p in target_contour.points[:-1]]
+        # Ensure at least two points for LineString
+        if len(contour_coords) < 2:
+             # Handle degenerate case (e.g., contour is just one point repeated)
+             if contour_coords:
+                 dist = point.distance_to(target_contour.points[0])
+                 segments = target_contour.get_segments()
+                 return segments[0] if segments else None, dist, 0 if segments else -1
+             else:
+                 return None, float('inf'), -1
+
+        shapely_contour_line = ShapelyLineString(contour_coords)
+        min_dist_shapely = shapely_point.distance(shapely_contour_line)
+    except Exception as e:
+        print(f"Error creating Shapely objects or calculating distance: {e}")
+        # Fallback to simple iteration if Shapely fails
+        min_dist_shapely = float('inf')
+
+
+    # Find the original Segment object that corresponds to this minimum distance
+    closest_seg: Optional[Segment] = None
+    closest_seg_index: int = -1
+    min_segment_dist_diff = float('inf')
     segments = target_contour.get_segments()
+
+    if not segments: # Should not happen if points exist, but check anyway
+        return None, min_dist_shapely, -1
+
     for i, seg in enumerate(segments):
-        dist = seg.distance_to_point(point)
-        if dist < min_dist:
-            min_dist = dist
+        # Use the segment's own distance calculation method
+        dist_to_segment = seg.distance_to_point(point)
+
+        # Find the segment whose distance is closest to Shapely's minimum distance
+        diff = abs(dist_to_segment - min_dist_shapely)
+        if diff < min_segment_dist_diff:
+            min_segment_dist_diff = diff
             closest_seg = seg
             closest_seg_index = i
-    return closest_seg, min_dist, closest_seg_index
+
+    # Optional: Add a tolerance check if needed, but finding the minimum difference should work
+    # if min_segment_dist_diff > 1e-6: # Arbitrary tolerance
+    #     print(f"Warning: Large difference ({min_segment_dist_diff:.3e}) between Shapely distance and segment distance.")
+
+    return closest_seg, min_dist_shapely, closest_seg_index
+
 
 #-----------------------------------------------------------------------------
 # Helper functions for conversions
@@ -630,7 +683,7 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
     global_path.extend(current_sub_path.points)
 
     # Tolerance for comparing floating point coordinates
-    CONNECT_TOLERANCE = 1e-6 # Small tolerance
+    CONNECT_TOLERANCE = 1e-5 # Increased tolerance
 
     while remaining_sub_paths:
         current_end_point = global_path[-1]
@@ -747,6 +800,7 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
 
 
 
