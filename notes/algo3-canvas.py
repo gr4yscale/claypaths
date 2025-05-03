@@ -681,182 +681,124 @@ def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
     return list_sub_paths
 
 #-----------------------------------------------------------------------------
-# 6. Generating continuous path (Connecting Sub-paths) - Improved with Spatial Index
+# 6. Generating continuous path (Connecting Sub-paths) - Linear Scan Method
 #-----------------------------------------------------------------------------
 
 def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     """
     Connects sub-paths (containing Shapely Points) into a single continuous global toolpath
-    using a spatial index for potentially faster endpoint matching.
+    using a linear scan approach with tolerance checking.
 
     Args:
         sub_paths: A list of SubPath objects.
 
     Returns:
-        A list of Points representing the final toolpath.
+        A list of Shapely Points representing the final toolpath.
     """
     if not sub_paths:
         return []
 
-    num_paths = len(sub_paths)
-    # Filter out empty paths initially and map original index to filtered index
-    valid_paths = [(i, path) for i, path in enumerate(sub_paths) if path.points]
-    if not valid_paths:
+    # Filter out empty paths
+    remaining_sub_paths = [p for p in sub_paths if p.points]
+    if not remaining_sub_paths:
         return []
 
-    num_valid_paths = len(valid_paths)
-    original_indices = [item[0] for item in valid_paths]
-    filtered_sub_paths = [item[1] for item in valid_paths]
-
-    # --- Build Spatial Index for Endpoints ---
-    endpoints_data = []
-    shapely_points = []
-    for i in range(num_valid_paths):
-        path = filtered_sub_paths[i]
-        start_pt = path.points[0]
-        end_pt = path.points[-1]
-        shapely_start = ShapelyPoint(start_pt.x, start_pt.y)
-        shapely_end = ShapelyPoint(end_pt.x, end_pt.y)
-        # Store: (shapely_geom, index_in_filtered_list, is_start_point)
-        endpoints_data.append((shapely_start, i, True))
-        endpoints_data.append((shapely_end, i, False))
-        shapely_points.append(shapely_start)
-        shapely_points.append(shapely_end)
-
-    if not shapely_points: return [] # Should not happen if valid_paths is not empty
-    tree = STRtree(shapely_points)
-    # --- End Spatial Index Build ---
-
-    used_indices = set() # Stores indices *from the filtered_sub_paths list*
     global_path: List[ShapelyPoint] = []
 
-    # Start with the first valid path (index 0 in filtered list)
-    start_idx_filtered = 0
-    current_path_idx_filtered = start_idx_filtered
-    current_path = filtered_sub_paths[current_path_idx_filtered]
-    global_path.extend(current_path.points)
-    used_indices.add(current_path_idx_filtered)
-    num_remaining = num_valid_paths - 1
+    # Start with the first valid sub-path
+    current_sub_path = remaining_sub_paths.pop(0)
+    global_path.extend(current_sub_path.points)
 
     # Tolerance for comparing floating point coordinates
     # Should be slightly larger than 1/CLIPPER_SCALE to account for float errors.
-    CONNECT_TOLERANCE = 0.1
-    #CONNECT_TOLERANCE = 1e-3 # 0.001 mm (1 micrometer) - A more reasonable value
+    CONNECT_TOLERANCE = 1e-3 # A previously used reasonable value
 
-    while num_remaining > 0:
+    #CONNECT_TOLERANCE = 0.1 # Use the last set value, adjust if needed
+
+    while remaining_sub_paths:
         current_end_point = global_path[-1]
-        shapely_current_end = ShapelyPoint(current_end_point.x, current_end_point.y)
-        # Query slightly larger than tolerance to be safe
-        query_geom = shapely_current_end.buffer(CONNECT_TOLERANCE * 1.1)
-
-        # Query the STRtree for nearby endpoint indices (indices into shapely_points list)
-        nearby_tree_indices = tree.query(query_geom)
-
-        best_match_filtered_idx = -1
-        min_dist = CONNECT_TOLERANCE
+        best_match_idx = -1
+        min_dist = CONNECT_TOLERANCE # Only connect if distance is within tolerance
         reverse_needed = False
-        found_match = False
+        found_next = False
 
-        # Process nearby points found by STRtree
-        candidate_endpoints = []
-        for tree_idx in nearby_tree_indices:
-             # Retrieve associated data using the index from the tree query
-             geom, path_idx_filtered, is_start = endpoints_data[tree_idx]
+        # --- Linear Scan for Connection ---
+        # Search all remaining paths for the best connection within tolerance
+        for i, next_sub_path in enumerate(remaining_sub_paths):
+            # next_sub_path guaranteed to have points due to initial filtering
 
-             # Check if the path corresponding to this endpoint is already used
-             if path_idx_filtered not in used_indices:
-                 # Calculate exact distance using Shapely distance
-                 # geom is already a ShapelyPoint from endpoints_data
-                 dist = current_end_point.distance(geom)
-                 # Check if within tolerance
-                 if dist < min_dist:
-                     # Store potential candidate info
-                     candidate_endpoints.append({
-                         'dist': dist,
-                         'path_idx_filtered': path_idx_filtered,
-                         'is_start': is_start
-                     })
+            next_start_point = next_sub_path.points[0]
+            next_end_point = next_sub_path.points[-1]
 
-        # If candidates were found, sort them by distance and pick the best
-        if candidate_endpoints:
-             candidate_endpoints.sort(key=lambda x: x['dist'])
-             best_candidate = candidate_endpoints[0]
-             best_match_filtered_idx = best_candidate['path_idx_filtered']
-             # Reverse if we matched an end point (is_start is False)
-             reverse_needed = not best_candidate['is_start']
-             found_match = True
+            # Use Shapely distance
+            dist_to_start = current_end_point.distance(next_start_point)
+            dist_to_end = current_end_point.distance(next_end_point)
+
+            # Check connection to the start of the next path
+            if dist_to_start < min_dist:
+                min_dist = dist_to_start
+                best_match_idx = i
+                reverse_needed = False
+                found_next = True # Found a potential match within tolerance
+
+            # Check connection to the end of the next path (requires reversal)
+            # Only consider if it's a better match than the start connection found so far
+            if dist_to_end < min_dist:
+                min_dist = dist_to_end
+                best_match_idx = i
+                reverse_needed = True
+                found_next = True # Found a potential match within tolerance
+        # --- End Linear Scan ---
 
         # --- Append matched path or trigger fallback ---
-        if found_match:
-            # Append the path found via spatial index
-            matched_sub_path = filtered_sub_paths[best_match_filtered_idx]
+        if found_next and best_match_idx != -1:
+            # Append the path found within tolerance
+            matched_sub_path = remaining_sub_paths.pop(best_match_idx)
             points_to_add = matched_sub_path.points
-            used_indices.add(best_match_filtered_idx)
 
             if reverse_needed:
-                global_path.extend(reversed(points_to_add[:-1])) # Skip duplicate end
+                # Add reversed points, skip the duplicate endpoint (which is now the first element)
+                global_path.extend(reversed(points_to_add[:-1]))
             else:
-                global_path.extend(points_to_add[1:]) # Skip duplicate start
+                # Add points, skip the duplicate start point (which is the first element)
+                global_path.extend(points_to_add[1:])
         else:
-            # Fallback: No suitable connection found via spatial index within tolerance.
-            # Use spatial index again to find the NEAREST unused endpoint.
-            print(f"Warning: Could not find connection within tolerance for endpoint {current_end_point}.")
-            print(f"Remaining paths: {num_remaining}. Performing fallback: Finding nearest unused endpoint via STRtree.")
+            # --- Fallback: No connection found within tolerance ---
+            # Find the geometrically closest endpoint among all remaining paths.
+            print(f"Warning: Could not find connection within tolerance {CONNECT_TOLERANCE} for endpoint {current_end_point}.")
+            print(f"Remaining paths: {len(remaining_sub_paths)}. Performing fallback: Finding closest jump.")
 
-            # Query for k nearest neighbors (adjust k if needed)
-            k_nearest = 10
-            # Ensure k is not larger than the total number of points in the tree
-            k_actual = min(k_nearest, len(shapely_points))
-
-            # Use query_nearest to find the SINGLE closest point in the tree (Shapely 1.x compatible)
-            closest_fallback_filtered_idx = -1
+            closest_fallback_idx = -1
             min_fallback_dist = float('inf')
             fallback_reverse_needed = False
-            found_spatial_fallback = False
+            found_fallback_candidate = False
 
-            try:
-                # query_nearest in Shapely 1.x returns the geometry object directly
-                nearest_geom = tree.query_nearest(shapely_current_end)
+            # Iterate through remaining paths to find the absolute closest endpoint
+            for i, fallback_path in enumerate(remaining_sub_paths):
+                fb_start_point = fallback_path.points[0] # ShapelyPoint
+                fb_end_point = fallback_path.points[-1] # ShapelyPoint
 
-                if nearest_geom:
-                    # Find the index of this geometry in our original list
-                    tree_idx = -1
-                    for idx, pt in enumerate(shapely_points):
-                         # Use coordinate comparison as object identity might differ
-                         if math.isclose(pt.x, nearest_geom.x) and math.isclose(pt.y, nearest_geom.y):
-                             tree_idx = idx
-                             break
+                # Use Shapely distance
+                dist_to_fb_start = current_end_point.distance(fb_start_point)
+                dist_to_fb_end = current_end_point.distance(fb_end_point)
 
-                    if tree_idx != -1:
-                        # Retrieve associated data using the found index
-                        geom, path_idx_filtered, is_start = endpoints_data[tree_idx]
+                if dist_to_fb_start < min_fallback_dist:
+                    min_fallback_dist = dist_to_fb_start
+                    closest_fallback_idx = i
+                    fallback_reverse_needed = False
+                    found_fallback_candidate = True
 
-                        # Check if the path corresponding to this endpoint is already used
-                        if path_idx_filtered not in used_indices:
-                            # This is the closest unused endpoint
-                            closest_fallback_filtered_idx = path_idx_filtered
-                            # geom is already a ShapelyPoint
-                            min_fallback_dist = current_end_point.distance(geom)
-                            fallback_reverse_needed = not is_start # Reverse if it's an end point
-                            found_spatial_fallback = True
-                        else:
-                            print("Fallback: Nearest endpoint found by STRtree is already used. Reverting to linear scan.")
-                    else:
-                         print("Fallback: Could not find nearest geometry index. Reverting to linear scan.")
-                else:
-                    print("Fallback: STRtree query_nearest returned no result. Reverting to linear scan.")
+                if dist_to_fb_end < min_fallback_dist:
+                    min_fallback_dist = dist_to_fb_end
+                    closest_fallback_idx = i
+                    fallback_reverse_needed = True
+                    found_fallback_candidate = True
 
-            except Exception as e:
-                 print(f"Error during STRtree.query_nearest (Shapely 1.x attempt): {e}. Reverting to linear scan.")
-                 found_spatial_fallback = False # Ensure linear scan runs
-
-            # --- Execute connection based on spatial fallback or linear scan ---
-            if found_spatial_fallback:
-                # Append the closest path found by the spatial fallback search
-                print(f"Fallback (Spatial): Jumping {min_fallback_dist:.3f} units to the {'end' if fallback_reverse_needed else 'start'} of filtered path index {closest_fallback_filtered_idx}.")
-                matched_sub_path = filtered_sub_paths[closest_fallback_filtered_idx]
+            if found_fallback_candidate:
+                # Append the closest path found by fallback search
+                print(f"Fallback: Jumping {min_fallback_dist:.3f} units to the {'end' if fallback_reverse_needed else 'start'} of path index {closest_fallback_idx} in remaining list.")
+                matched_sub_path = remaining_sub_paths.pop(closest_fallback_idx)
                 points_to_add = matched_sub_path.points
-                used_indices.add(closest_fallback_filtered_idx)
 
                 # When jumping, include the first point of the jumped-to path
                 if fallback_reverse_needed:
@@ -864,56 +806,9 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
                 else:
                     global_path.extend(points_to_add)
             else:
-                # --- Linear Scan Fallback (Original Method) ---
-                # Execute if spatial fallback failed or found an already used path.
-                print("Executing linear scan fallback...")
-                closest_linear_fallback_idx = -1
-                min_linear_fallback_dist = float('inf')
-                linear_fallback_reverse_needed = False
-                found_linear_fallback = False
-
-                # Iterate through the filtered list indices
-                for i in range(num_valid_paths):
-                    if i not in used_indices:
-                        fallback_path = filtered_sub_paths[i]
-                        fb_start_point = fallback_path.points[0] # ShapelyPoint
-                        fb_end_point = fallback_path.points[-1] # ShapelyPoint
-
-                        # Use Shapely distance
-                        dist_to_fb_start = current_end_point.distance(fb_start_point)
-                        dist_to_fb_end = current_end_point.distance(fb_end_point)
-
-                        if dist_to_fb_start < min_linear_fallback_dist:
-                            min_linear_fallback_dist = dist_to_fb_start
-                            closest_linear_fallback_idx = i
-                            linear_fallback_reverse_needed = False
-                            found_linear_fallback = True
-
-                        if dist_to_fb_end < min_linear_fallback_dist:
-                            min_linear_fallback_dist = dist_to_fb_end
-                            closest_linear_fallback_idx = i
-                            linear_fallback_reverse_needed = True
-                            found_linear_fallback = True
-
-                if found_linear_fallback:
-                    # Append the closest path found by linear search
-                    print(f"Fallback (Linear): Jumping {min_linear_fallback_dist:.3f} units to the {'end' if linear_fallback_reverse_needed else 'start'} of filtered path index {closest_linear_fallback_idx}.")
-                    matched_sub_path = filtered_sub_paths[closest_linear_fallback_idx]
-                    points_to_add = matched_sub_path.points
-                    used_indices.add(closest_linear_fallback_idx)
-
-                    # When jumping, include the first point of the jumped-to path
-                    if linear_fallback_reverse_needed:
-                        global_path.extend(reversed(points_to_add))
-                    else:
-                        global_path.extend(points_to_add)
-                else:
-                    # If even the linear scan didn't find an unused path
-                    print("Error: Fallback failed completely. Could not find any unused path via linear scan.")
-                    break # Exit loop
-
-        # Decrement remaining count
-        num_remaining = num_valid_paths - len(used_indices)
+                # Should not happen if remaining_sub_paths is not empty
+                print("Error: Fallback failed completely. Could not find any remaining path.")
+                break # Exit loop
 
     return global_path
 
