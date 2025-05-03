@@ -31,10 +31,15 @@ visualize_problematic_segments: False
 visualize_continuous_path: true
 
 
-### Rasterization Optimization (Optional)
-optimize_via_rasterization:  true       # Enable/disable raster optimization step
-raster_resolution: 0.05                 # mm per pixel for rasterization (smaller = higher res)
-raster_sigma_factor: 0.05                # Gaussian blur sigma relative to toolpath_width (in pixels)
+### Rasterization Sub-path Creation Parameters
+raster_resolution: 0.01                 # mm per pixel for rasterization (smaller = higher res)
+# raster_line_thickness removed, now uses thickness=1
+
+
+### Path Resampling (Optional Post-processing)
+enable_resampling: true                 # Resample the final path to uniform segment length
+resampling_segment_length: 0.05          # Target segment length in mm for resampling
+visualize_resampled_path: true          # Show a separate plot of the resampled path
 
 
 ### GCode generator

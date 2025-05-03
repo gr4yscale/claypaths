@@ -398,8 +398,8 @@ def re_level_contours(offset_results: List[List[Contour]], initial_outer: List[C
 def create_sub_paths_via_rasterization(
     leveled_contours: List[List[Contour]],
     line_spacing: float,
-    resolution: float = 0.1, # mm per pixel
-    raster_line_thickness: int = 2 # Thickness for drawing lines before skeletonization
+    resolution: float = 0.1 # mm per pixel
+    # Removed raster_line_thickness parameter
 ) -> List[SubPath]:
     """
     Creates sub-paths representing both original contour segments and connecting paths
@@ -409,7 +409,6 @@ def create_sub_paths_via_rasterization(
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
         resolution: The size of each pixel in millimeters.
-        raster_line_thickness: Thickness (in pixels) to draw contours for skeletonization.
 
     Returns:
         A list of SubPath objects representing the skeletonized path network.
@@ -472,8 +471,8 @@ def create_sub_paths_via_rasterization(
     image = np.zeros((img_height, img_width), dtype=np.uint8)
     for contour in all_contours:
         points_img = np.array([world_to_img(p.x, p.y) for p in contour.points], dtype=np.int32)
-        # Draw polylines (False indicates not closed, avoids double-drawing first/last segment if contour is closed)
-        cv2.polylines(image, [points_img], isClosed=False, color=255, thickness=raster_line_thickness)
+        # Draw polylines with thickness 1 for skeletonization
+        cv2.polylines(image, [points_img], isClosed=False, color=255, thickness=1)
 
     # 5. Skeletonize
     try:
@@ -982,12 +981,11 @@ if __name__ == '__main__':
     # --- 4/5. Create Sub-paths via Rasterization (Replaces Algo 2 & 3) ---
     print("\n--- Creating Sub-paths via Rasterization ---")
     raster_resolution = config.get('raster_resolution', 0.05) # Default if not in config
-    raster_line_thickness = config.get('raster_line_thickness', 2) # Default if not in config
     sub_paths = create_sub_paths_via_rasterization(
         leveled_contours,
         line_spacing,
-        resolution=raster_resolution,
-        raster_line_thickness=raster_line_thickness
+        resolution=raster_resolution
+        # Removed raster_line_thickness argument
     )
     if not sub_paths:
          sys.exit("Failed to create sub-paths using rasterization.")
