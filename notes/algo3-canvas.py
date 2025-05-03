@@ -11,7 +11,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import pyclipper
-from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint
+from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint, MultiLineString, Polygon
 from shapely.strtree import STRtree
 import numpy as np
 try:
@@ -670,9 +670,42 @@ def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> 
     if not path or len(path) < 2 or segment_length <= 1e-6:
         return path # Cannot resample
 
-    line = ShapelyLineString(path)
+    # Create LineString and attempt to clean self-intersections/invalid geometry
+    try:
+        line = ShapelyLineString(path)
+        # buffer(0) can fix invalid geometries like self-intersections
+        cleaned_geom = line.buffer(0)
+
+        if cleaned_geom.is_empty:
+             print("Resampling: buffer(0) resulted in empty geometry. Returning original path.")
+             return path
+        elif isinstance(cleaned_geom, ShapelyLineString):
+            line = cleaned_geom
+            print("Resampling: Applied buffer(0) cleanup, result is LineString.")
+        elif isinstance(cleaned_geom, MultiLineString):
+             # If buffer(0) results in multiple lines, pick the longest one
+             print("Resampling: buffer(0) resulted in MultiLineString, selecting longest.")
+             line = max(cleaned_geom.geoms, key=lambda l: l.length)
+        elif isinstance(cleaned_geom, ShapelyPolygon): # Use alias
+             # If it becomes a polygon (e.g., input was closed loop), use its exterior
+             print("Resampling: buffer(0) resulted in Polygon, using exterior.")
+             line = cleaned_geom.exterior
+             if not isinstance(line, ShapelyLineString): # Use alias
+                  print("Resampling: Polygon exterior is not LineString. Using original path.")
+                  line = ShapelyLineString(path) # Fallback
+        else:
+             print(f"Resampling: buffer(0) resulted in unexpected geometry type ({type(cleaned_geom)}). Using original line.")
+             # Fallback to original line if cleanup fails or returns something weird
+             line = ShapelyLineString(path)
+
+    except Exception as e:
+        print(f"Resampling: Error during buffer(0) cleanup: {e}. Using original line.")
+        line = ShapelyLineString(path)
+
+
     total_length = line.length
     if total_length < segment_length:
+        print("Resampling: Path length shorter than segment length after cleanup.")
         return path # Path is shorter than desired segment length
 
     print(f"Resampling path (length {total_length:.2f}) with target segment length {segment_length:.3f}...")
