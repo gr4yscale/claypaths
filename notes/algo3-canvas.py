@@ -416,9 +416,6 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
     print(f"Built STRtree with {len(all_geometries_for_index)} total segments.")
     # --- End Spatial Index Build ---
 
-    # Define target spacing for breakpoints (e.g., relative to line_spacing)
-    target_breakpoint_spacing = line_spacing * 15.0 # Adjust multiplier as needed
-
     # Iterate from inner levels outwards (highest level index to 0)
     # This direction is crucial for the logic of connecting inwards.
     for i in range(num_levels - 1, -1, -1):
@@ -437,36 +434,32 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
                 # print(f"Debug: Skipping zero-length contour {j} in level {i}")
                 continue
 
-            # --- Generate Multiple Breakpoints per Contour ---
-            num_breaks = max(1, round(contour_len / target_breakpoint_spacing))
-            initial_offset_ratio = ((layer_index + j) % n_layer_period) / n_layer_period # Base offset shifts each layer/contour
+            # --- Step 1: Find candidate breakpoint p1 ---
+            # Vary starting point based on layer index and contour index to distribute breakpoints
+            # Use modulo arithmetic to cycle through starting positions
+            start_offset_ratio = ((layer_index + j) % n_layer_period) / n_layer_period
+            start_dist = start_offset_ratio * contour_len
 
-            for break_idx in range(num_breaks):
-                # Calculate start distance for this breakpoint
-                break_offset_ratio = break_idx / num_breaks
-                current_offset_ratio = (initial_offset_ratio + break_offset_ratio) % 1.0
-                start_dist = current_offset_ratio * contour_len
+            p1, seg_p1, seg_p1_idx = contour.get_point_at_dist(start_dist)
+            if p1 is None or seg_p1 is None:
+                print(f"Warning: Could not find p1 at dist {start_dist:.2f} on contour {j} level {i}")
+                continue # Should not happen on valid closed contour
 
-                # --- Step 1: Find candidate breakpoint p1 ---
-                p1, seg_p1, seg_p1_idx = contour.get_point_at_dist(start_dist)
-                if p1 is None or seg_p1 is None:
-                    print(f"Warning: Could not find p1 at dist {start_dist:.2f} on contour {j} level {i} (Break {break_idx+1}/{num_breaks})")
-                    continue # Skip this breakpoint
+            # --- Step 2 & 3: Find p2 at distance 'line_spacing' from p1 ---
+            # Find p2 by walking 'line_spacing' distance from p1 along the contour
+            p2_dist = (start_dist + line_spacing) % contour_len # Wrap around contour
+            p2, seg_p2, seg_p2_idx = contour.get_point_at_dist(p2_dist)
+            if p2 is None or seg_p2 is None:
+                print(f"Warning: Could not find p2 at dist {p2_dist:.2f} on contour {j} level {i}")
+                continue
 
-                # --- Step 2 & 3: Find p2 at distance 'line_spacing' from p1 ---
-                p2_dist = (start_dist + line_spacing) % contour_len # Wrap around contour
-                p2, seg_p2, seg_p2_idx = contour.get_point_at_dist(p2_dist)
-                if p2 is None or seg_p2 is None:
-                    print(f"Warning: Could not find p2 at dist {p2_dist:.2f} on contour {j} level {i} (Break {break_idx+1}/{num_breaks})")
-                    continue # Skip this breakpoint
+            # Ensure p1 and p2 are distinct points
+            if p1.distance_to(p2) < 1e-6:
+                # print(f"Debug: p1 and p2 are too close on contour {j} level {i}. Skipping breakpoint.")
+                continue
 
-                # Ensure p1 and p2 are distinct points
-                if p1.distance_to(p2) < 1e-6:
-                    # print(f"Debug: p1 and p2 are too close on contour {j} level {i} (Break {break_idx+1}/{num_breaks}). Skipping.")
-                    continue # Skip this breakpoint
-
-                # --- Ambiguity in Original Step 2 ---
-                # The original pseudo-code mentions checking if the segment *containing p1*
+            # --- Ambiguity in Original Step 2 ---
+            # The original pseudo-code mentions checking if the segment *containing p1*
             # is shorter than line_spacing and potentially advancing p1.
             # This is ambiguous and might lead to complex logic. We proceed assuming
             # valid p1 and p2 have been found, regardless of the length of seg_p1 or seg_p2.
@@ -545,7 +538,6 @@ def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float,
             contour.connecting_segments.append(Segment(p2, p2_proj))
             # Note: Breakpoints are stored on the contour they originate from (level i).
             # The sub-path formation logic will use this information.
-            # End of loop for multiple breakpoints per contour
 
     return contours_with_breaks
 
