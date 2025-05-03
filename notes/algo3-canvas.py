@@ -13,6 +13,20 @@ if project_root not in sys.path:
 import pyclipper
 from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint
 from shapely.strtree import STRtree
+import numpy as np
+try:
+    import cv2 # For image processing
+    from scipy.ndimage import gaussian_filter # For Gaussian blur
+    cv2_available = True
+except ImportError:
+    cv2_available = False
+    print("Warning: OpenCV (cv2) or SciPy not found. Rasterization optimization will be skipped.")
+    # Define dummy gaussian_filter if scipy is missing but cv2 might be present (less likely scenario)
+    if 'gaussian_filter' not in locals():
+        def gaussian_filter(img, sigma):
+            print("Warning: SciPy not found, cannot apply Gaussian blur.")
+            return img
+
 
 # Import project modules
 from src.stl_loader import load_stl
@@ -893,6 +907,142 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[Point]:
 
 
 #-----------------------------------------------------------------------------
+# 7. Path Optimization via Rasterization (Optional Post-processing)
+#-----------------------------------------------------------------------------
+
+def optimize_path_via_rasterization(
+    path: List[Point],
+    line_spacing: float,
+    resolution: float = 0.1, # mm per pixel
+    gaussian_sigma_factor: float = 1.5 # Sigma relative to line spacing in pixels
+) -> List[Point]:
+    """
+    Optimizes a toolpath using rasterization, Gaussian blur, and skeletonization.
+
+    Args:
+        path: The input toolpath as a list of Points.
+        line_spacing: The characteristic width of the toolpath (used for blur sigma).
+        resolution: The size of each pixel in millimeters.
+        gaussian_sigma_factor: Multiplier for line_spacing to determine Gaussian sigma.
+
+    Returns:
+        A new, potentially optimized, toolpath as a list of Points.
+    """
+    if not cv2_available:
+        print("Raster Optimization: Skipping because OpenCV (cv2) or SciPy is not installed.")
+        return path
+
+    if not path or len(path) < 2:
+        print("Raster Optimization: Path too short, returning original.")
+        return path
+
+    print(f"Raster Optimization: Starting with resolution {resolution} mm/pixel.")
+
+    # 1. Determine bounds and image size
+    min_x = min(p.x for p in path)
+    max_x = max(p.x for p in path)
+    min_y = min(p.y for p in path)
+    max_y = max(p.y for p in path)
+
+    padding = line_spacing * 3 # Add padding around the path
+    world_min_x = min_x - padding
+    world_min_y = min_y - padding
+    world_max_x = max_x + padding
+    world_max_y = max_y + padding
+
+    width_mm = world_max_x - world_min_x
+    height_mm = world_max_y - world_min_y
+
+    img_width = int(np.ceil(width_mm / resolution))
+    img_height = int(np.ceil(height_mm / resolution))
+
+    if img_width <= 0 or img_height <= 0 or img_width * img_height > 50_000_000: # Safety limit
+        print(f"Raster Optimization: Image size too large or invalid ({img_width}x{img_height}). Skipping.")
+        return path
+
+    print(f"Raster Optimization: Image size {img_width}x{img_height}.")
+
+    # 2. World-to-Image Transformation
+    def world_to_img(wx, wy):
+        ix = int((wx - world_min_x) / resolution)
+        iy = int((wy - world_min_y) / resolution)
+        # Clamp coordinates to be within image bounds
+        ix = max(0, min(img_width - 1, ix))
+        iy = max(0, min(img_height - 1, iy))
+        return ix, iy
+
+    # 3. Image-to-World Transformation
+    def img_to_world(ix, iy):
+        wx = world_min_x + (ix + 0.5) * resolution # Use pixel center
+        wy = world_min_y + (iy + 0.5) * resolution
+        return wx, wy
+
+    # 4. Rasterize the path
+    image = np.zeros((img_height, img_width), dtype=np.uint8)
+    for i in range(len(path) - 1):
+        p1 = path[i]
+        p2 = path[i+1]
+        ix1, iy1 = world_to_img(p1.x, p1.y)
+        ix2, iy2 = world_to_img(p2.x, p2.y)
+        # OpenCV uses (x, y) coordinates, which correspond to (col, row)
+        # Image shape is (rows, cols) = (height, width)
+        cv2.line(image, (ix1, iy1), (ix2, iy2), 255, thickness=1) # Draw white line
+
+    # 5. Apply Gaussian Blur
+    sigma_pixels = (line_spacing / resolution) * gaussian_sigma_factor
+    blurred_image = gaussian_filter(image.astype(float), sigma=sigma_pixels)
+    print(f"Raster Optimization: Applied Gaussian blur with sigma={sigma_pixels:.2f} pixels.")
+
+    # 6. Threshold the blurred image
+    # Use a threshold slightly above zero to capture the blurred area
+    threshold_value = np.max(blurred_image) * 0.1 # Example: 10% of max value
+    _, thresholded_image = cv2.threshold(blurred_image, threshold_value, 255, cv2.THRESH_BINARY)
+    thresholded_image = thresholded_image.astype(np.uint8)
+
+    # 7. Skeletonize
+    # Use cv2.ximgproc.thinning (requires opencv-contrib-python)
+    # Alternatively, use skimage.morphology.skeletonize
+    try:
+        # Note: THINNING_ZHANGSUEN expects white foreground on black background
+        skeleton = cv2.ximgproc.thinning(thresholded_image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+        print("Raster Optimization: Performed skeletonization.")
+    except AttributeError:
+        print("Raster Optimization: cv2.ximgproc.thinning not available (install opencv-contrib-python?). Skipping skeletonization.")
+        # Fallback: Use the thresholded image directly (less ideal)
+        skeleton = thresholded_image
+    except Exception as e:
+        print(f"Raster Optimization: Error during skeletonization: {e}. Skipping.")
+        skeleton = thresholded_image
+
+
+    # 8. Find contours of the skeleton
+    # Find external contours of the skeleton pixels
+    contours, _ = cv2.findContours(skeleton, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) # Get all points
+
+    if not contours:
+        print("Raster Optimization: No contours found after skeletonization. Returning original path.")
+        return path
+
+    # 9. Select the longest contour and convert back to world coordinates
+    longest_contour = max(contours, key=cv2.contourArea) # Use area as proxy for length here
+    optimized_path_pixels = longest_contour.reshape(-1, 2) # Reshape to list of [ix, iy]
+
+    optimized_path: List[Point] = []
+    for ix, iy in optimized_path_pixels:
+        wx, wy = img_to_world(ix, iy)
+        # Avoid adding duplicate consecutive points
+        if not optimized_path or not math.isclose(optimized_path[-1].x, wx) or not math.isclose(optimized_path[-1].y, wy):
+            optimized_path.append(Point(wx, wy))
+
+    print(f"Raster Optimization: Extracted path with {len(optimized_path)} points.")
+
+    # Optional: Simplify the resulting path (e.g., Ramer-Douglas-Peucker)
+    # ...
+
+    return optimized_path
+
+
+#-----------------------------------------------------------------------------
 # Main Execution Logic
 #-----------------------------------------------------------------------------
 if __name__ == '__main__':
@@ -1071,7 +1221,24 @@ if __name__ == '__main__':
     # --- 6. Connect Sub-paths ---
     print("\n--- Connecting Sub-paths ---")
     final_toolpath = connect_sub_paths(sub_paths)
-    print(f"Total points in final toolpath: {len(final_toolpath)}")
+    print(f"Total points in connected toolpath: {len(final_toolpath)}")
+
+    # --- 6b. Optional Raster Optimization ---
+    if config.get('optimize_via_rasterization', False): # Add this flag to config.yaml if desired
+        print("\n--- Optimizing Path via Rasterization ---")
+        raster_resolution = config.get('raster_resolution', 0.05) # e.g., 50 microns per pixel
+        raster_sigma_factor = config.get('raster_sigma_factor', 1.0)
+        optimized_toolpath = optimize_path_via_rasterization(
+            final_toolpath,
+            line_spacing,
+            resolution=raster_resolution,
+            gaussian_sigma_factor=raster_sigma_factor
+        )
+        print(f"Total points after raster optimization: {len(optimized_toolpath)}")
+        # Decide whether to use the optimized path for visualization/output
+        path_to_visualize = optimized_toolpath
+    else:
+        path_to_visualize = final_toolpath
 
 
     # --- 7. Optional: Visualize ---
@@ -1102,10 +1269,10 @@ if __name__ == '__main__':
                          ax.plot(x, y, color=colors[i], linestyle='--', linewidth=0.8, label=f'Offset Level {i}' if 'Offset' not in plt.gca().get_legend_handles_labels()[1] else "")
 
 
-            # Plot final toolpath
-            if final_toolpath:
-                tp_x = [p.x for p in final_toolpath]
-                tp_y = [p.y for p in final_toolpath]
+            # Plot final toolpath (potentially optimized)
+            if path_to_visualize:
+                tp_x = [p.x for p in path_to_visualize]
+                tp_y = [p.y for p in path_to_visualize]
                 ax.plot(tp_x, tp_y, 'b-', marker='.', markersize=2, linewidth=1.0, label='Final Toolpath')
                 ax.plot(tp_x[0], tp_y[0], 'go', markersize=6, label='Start') # Mark start
                 ax.plot(tp_x[-1], tp_y[-1], 'ro', markersize=6, label='End')   # Mark end

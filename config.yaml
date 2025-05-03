@@ -27,7 +27,14 @@ visualize_stl_mesh: False
 visualize_layer_contours: False
 # debug polygonization failures
 visualize_problematic_segments: False
+# visualize the final continuous path per layer
+visualize_continuous_path: true
 
+
+### Rasterization Optimization (Optional)
+optimize_via_rasterization:  true       # Enable/disable raster optimization step
+raster_resolution: 0.05                 # mm per pixel for rasterization (smaller = higher res)
+raster_sigma_factor: 0.05                # Gaussian blur sigma relative to toolpath_width (in pixels)
 
 
 ### GCode generator
