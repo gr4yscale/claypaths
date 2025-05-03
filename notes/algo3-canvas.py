@@ -13,9 +13,14 @@ if project_root not in sys.path:
 import pyclipper
 from shapely.geometry import Polygon as ShapelyPolygon, LineString as ShapelyLineString, Point as ShapelyPoint
 from shapely.strtree import STRtree
-import numpy as np # Keep numpy for now, might be used elsewhere
-
-# Removed cv2 and scipy imports
+import numpy as np
+try:
+    import cv2 # For image processing
+    from scipy.ndimage import distance_transform_edt # For distance transform (alternative)
+    cv2_available = True
+except ImportError:
+    cv2_available = False
+    print("Warning: OpenCV (cv2) or SciPy not found. Rasterization approach will not work.")
 
 
 # Import project modules
@@ -387,298 +392,133 @@ def re_level_contours(offset_results: List[List[Contour]], initial_outer: List[C
 
 
 #-----------------------------------------------------------------------------
-# 4. Algorithm 2: Finding breakpoints
+# 4. (Removed) Algorithm 2: Finding breakpoints (Geometric approach)
 #-----------------------------------------------------------------------------
 
-def find_breakpoints(leveled_contours: List[List[Contour]], line_spacing: float, layer_index: int, n_layer_period: int) -> List[List[Contour]]:
+def create_sub_paths_via_rasterization(
+    leveled_contours: List[List[Contour]],
+    line_spacing: float,
+    resolution: float = 0.1, # mm per pixel
+    raster_line_thickness: int = 2 # Thickness for drawing lines before skeletonization
+) -> List[SubPath]:
     """
-    Identifies breakpoints to connect adjacent contours. Modifies contours in place.
+    Creates sub-paths representing both original contour segments and connecting paths
+    using rasterization and skeletonization. Replaces find_breakpoints and form_sub_paths.
 
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
-        line_spacing: The distance 'd' between offset contours.
-        layer_index: The current layer number (0-based).
-        n_layer_period: How often to change the breakpoint selection strategy (every 'n' layers).
+        line_spacing: The characteristic width/distance between contours.
+        resolution: The size of each pixel in millimeters.
+        raster_line_thickness: Thickness (in pixels) to draw contours for skeletonization.
 
     Returns:
-        The input leveled_contours list, with breakpoint information added to each contour.
+        A list of SubPath objects representing the skeletonized path network.
     """
-    num_levels = len(leveled_contours)
-    contours_with_breaks = copy.deepcopy(leveled_contours) # Work on a copy
+    if not cv2_available:
+        print("Raster Sub-path Creation: Skipping because OpenCV (cv2) or SciPy is not installed.")
+        return []
 
-    # --- Build Spatial Index ONCE for ALL Segments ---
-    all_segments_data = []
-    for level_idx in range(num_levels):
-        for contour_k in contours_with_breaks[level_idx]:
-             if not contour_k.points or len(contour_k.points) < 3: continue
-             # Store level index on the contour object itself for easy access later
-             contour_k.level = level_idx # Ensure level is set correctly here if not done before
-             for seg_idx, seg in enumerate(contour_k.get_segments()):
-                 # Create Shapely LineString for indexing
-                 shapely_line = ShapelyLineString([(seg.p1.x, seg.p1.y), (seg.p2.x, seg.p2.y)])
-                 # Store tuple: (geometry, original_segment_object, original_contour_object)
-                 all_segments_data.append((shapely_line, seg, contour_k))
+    all_contours = [c for level in leveled_contours for c in level if c.points and len(c.points) >= 2]
+    if not all_contours:
+        print("Raster Sub-path Creation: No valid contours provided.")
+        return []
 
-    # Build tree only from geometries
-    all_geometries_for_index = [item[0] for item in all_segments_data]
-    if not all_geometries_for_index:
-        print("Warning: No segments found in any level to build spatial index.")
-        return contours_with_breaks # Return early if no segments exist
-    tree = STRtree(all_geometries_for_index)
-    print(f"Built STRtree with {len(all_geometries_for_index)} total segments.")
-    # --- End Spatial Index Build ---
+    print(f"Raster Sub-path Creation: Starting with {len(all_contours)} contours, resolution {resolution} mm/pixel.")
 
-    # Iterate from inner levels outwards (highest level index to 0)
-    # This direction is crucial for the logic of connecting inwards.
-    for i in range(num_levels - 1, -1, -1):
-        current_level_contours = contours_with_breaks[i]
+    # 1. Determine bounds from ALL contours and image size
+    all_points = [p for contour in all_contours for p in contour.points]
+    if not all_points: return []
 
-        # No need to check target_level_start_index >= num_levels here,
-        # the filtering logic inside the query handles it.
+    min_x = min(p.x for p in all_points)
+    max_x = max(p.x for p in all_points)
+    min_y = min(p.y for p in all_points)
+    max_y = max(p.y for p in all_points)
 
-        for j, contour in enumerate(current_level_contours):
-            # Ensure contour is valid and has non-negligible length
-            if not contour.points or len(contour.points) < 3:
-                # print(f"Debug: Skipping invalid contour {j} in level {i}")
-                continue
-            contour_len = contour.length()
-            if contour_len < 1e-6:
-                # print(f"Debug: Skipping zero-length contour {j} in level {i}")
-                continue
+    padding = line_spacing * 2 # Add padding around the contours
+    world_min_x = min_x - padding
+    world_min_y = min_y - padding
+    world_max_x = max_x + padding
+    world_max_y = max_y + padding
 
-            # --- Step 1: Find candidate breakpoint p1 ---
-            # Vary starting point based on layer index and contour index to distribute breakpoints
-            # Use modulo arithmetic to cycle through starting positions
-            start_offset_ratio = ((layer_index + j) % n_layer_period) / n_layer_period
-            start_dist = start_offset_ratio * contour_len
+    width_mm = world_max_x - world_min_x
+    height_mm = world_max_y - world_min_y
 
-            # get_point_at_dist now returns ShapelyPoint
-            p1, seg_p1, seg_p1_idx = contour.get_point_at_dist(start_dist)
-            if p1 is None or seg_p1 is None: # Check if interpolation failed
-                print(f"Warning: Could not interpolate p1 at dist {start_dist:.2f} on contour {j} level {i}")
-                continue
+    img_width = int(np.ceil(width_mm / resolution))
+    img_height = int(np.ceil(height_mm / resolution))
 
-            # --- Step 2 & 3: Find p2 at distance 'line_spacing' from p1 ---
-            # Find p2 by walking 'line_spacing' distance from p1 along the contour
-            p2_dist = (start_dist + line_spacing) % contour_len # Wrap around contour
-            p2, seg_p2, seg_p2_idx = contour.get_point_at_dist(p2_dist)
-            if p2 is None or seg_p2 is None: # Check if interpolation failed
-                print(f"Warning: Could not interpolate p2 at dist {p2_dist:.2f} on contour {j} level {i}")
-                continue
+    if img_width <= 0 or img_height <= 0 or img_width * img_height > 50_000_000: # Safety limit
+        print(f"Raster Sub-path Creation: Image size too large or invalid ({img_width}x{img_height}). Skipping.")
+        return []
 
-            # Ensure p1 and p2 are distinct points using Shapely distance
-            if p1.distance(p2) < POINT_EQUALITY_TOLERANCE:
-                # print(f"Debug: p1 and p2 are too close on contour {j} level {i}. Skipping breakpoint.")
-                continue
+    print(f"Raster Sub-path Creation: Image size {img_width}x{img_height}.")
 
-            # --- Ambiguity in Original Step 2 ---
-            # The original pseudo-code mentions checking if the segment *containing p1*
-            # is shorter than line_spacing and potentially advancing p1.
-            # This is ambiguous and might lead to complex logic. We proceed assuming
-            # valid p1 and p2 have been found, regardless of the length of seg_p1 or seg_p2.
-            # A check like `if seg_p1.length() < line_spacing:` could be added, but the
-            # corrective action (e.g., how far to advance p1) is unclear.
+    # 2. World-to-Image Transformation
+    def world_to_img(wx, wy):
+        ix = int((wx - world_min_x) / resolution)
+        iy = int((wy - world_min_y) / resolution)
+        # Clamp coordinates to be within image bounds
+        ix = max(0, min(img_width - 1, ix))
+        iy = max(0, min(img_height - 1, iy))
+        # OpenCV uses (col, row) = (x, y)
+        return ix, iy
 
-            # --- Step 4, 5, 6: Find closest valid target segment using Spatial Index ---
-            # p1 is already a ShapelyPoint
-            search_radius = line_spacing * 3.0 # Search radius around p1
-            query_geom = p1.buffer(search_radius)
-            nearby_indices = tree.query(query_geom) # Indices in geometries_for_index
+    # 3. Image-to-World Transformation
+    def img_to_world(ix, iy):
+        wx = world_min_x + (ix + 0.5) * resolution # Use pixel center
+        wy = world_min_y + (iy + 0.5) * resolution
+        return wx, wy
 
-            valid_candidates = []
-            for index in nearby_indices:
-                # Retrieve data associated with the indexed geometry from the global list
-                shapely_line, seg_sl, cand_target_contour = all_segments_data[index]
+    # 4. Rasterize ALL contours with specified thickness
+    image = np.zeros((img_height, img_width), dtype=np.uint8)
+    for contour in all_contours:
+        points_img = np.array([world_to_img(p.x, p.y) for p in contour.points], dtype=np.int32)
+        # Draw polylines (False indicates not closed, avoids double-drawing first/last segment if contour is closed)
+        cv2.polylines(image, [points_img], isClosed=False, color=255, thickness=raster_line_thickness)
 
-                # Filter: Must be in a subsequent level (level > i) and match type
-                if cand_target_contour.level > i and cand_target_contour.type == contour.type:
-                    # Calculate exact distance using Shapely (p1 is ShapelyPoint)
-                    dist_sl = p1.distance(shapely_line)
-                    valid_candidates.append({
-                        'distance': dist_sl,
-                        'level': cand_target_contour.level, # Level of the target contour
-                        'segment': seg_sl,
-                        'contour': cand_target_contour
-                    })
+    # 5. Skeletonize
+    try:
+        # Note: THINNING_ZHANGSUEN expects white foreground on black background
+        skeleton = cv2.ximgproc.thinning(image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+        print("Raster Sub-path Creation: Performed skeletonization.")
+    except AttributeError:
+        print("Raster Sub-path Creation: cv2.ximgproc.thinning not available (install opencv-contrib-python?). Cannot proceed.")
+        return []
+    except Exception as e:
+        print(f"Raster Sub-path Creation: Error during skeletonization: {e}. Cannot proceed.")
+        return []
 
-            # Sort candidates: first by level (ascending), then by distance (ascending)
-            valid_candidates.sort(key=lambda c: (c['level'], c['distance']))
+    # 6. Find contours of the skeleton - these are the sub-paths
+    # Use CHAIN_APPROX_NONE to get all points along the skeleton contours
+    skeleton_contours_img, _ = cv2.findContours(skeleton, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
 
-            # Find the best match according to original logic's criteria
-            closest_target_seg: Optional[Segment] = None
-            target_contour_k: Optional[Contour] = None
-            min_dist_to_target = float('inf')
-            found_target = False
+    if not skeleton_contours_img:
+        print("Raster Sub-path Creation: No contours found after skeletonization.")
+        return []
 
-            for candidate in valid_candidates:
-                # Check distance tolerance (must be reasonably close to line_spacing)
-                if candidate['distance'] <= line_spacing * 1.5:
-                    closest_target_seg = candidate['segment']
-                    target_contour_k = candidate['contour']
-                    min_dist_to_target = candidate['distance']
-                    found_target = True
-                    # print(f"Debug: Found target seg via spatial index for L{i} C{j} -> L{target_contour_k.level} Dist: {min_dist_to_target:.2f}")
-                    break # Found the best one (lowest level, then lowest distance within tolerance)
+    # 7. Convert skeleton contours back to world coordinates and create SubPath objects
+    sub_paths_generated: List[SubPath] = []
+    for contour_img in skeleton_contours_img:
+        path_pixels = contour_img.reshape(-1, 2) # Reshape to list of [ix, iy]
+        if len(path_pixels) < 2: continue # Need at least two points for a path
 
-            if not found_target:
-                 # print(f"Warning: Could not find suitable target segment via spatial index for point {p1} originating from contour {j} level {i}")
-                 continue # Could not find a suitable target segment
+        world_points: List[ShapelyPoint] = []
+        for ix, iy in path_pixels:
+            wx, wy = img_to_world(ix, iy)
+            new_point = ShapelyPoint(wx, wy)
+            # Avoid adding duplicate consecutive points using distance check
+            if not world_points or world_points[-1].distance(new_point) > POINT_EQUALITY_TOLERANCE:
+                world_points.append(new_point)
 
-            # --- Step 7: Find projected point p1_proj of p1 onto the target segment sl ---
-            # Use the Segment's Shapely-based projection method
-            p1_proj = closest_target_seg.point_projection(p1) # p1 is ShapelyPoint
+        # Add the subpath if it has enough points after removing duplicates
+        if len(world_points) >= 2:
+            sub_paths_generated.append(SubPath(world_points))
 
-            # --- Step 8: Find p2_proj (Simplified Approach) ---
-            # Project p2 onto the *chosen* target contour (target_contour_k).
-            # Use the efficient find_closest_segment_to_point restricted to this contour.
-            seg_p2_target, dist_p2_target, _ = find_closest_segment_to_point(p2, target_contour_k) # p2 is ShapelyPoint
-            if seg_p2_target is None:
-                # This should ideally not happen if target_contour_k is valid
-                print(f"Warning: Could not find target segment for point p2 near chosen target contour L{target_contour_k.level}")
-                continue
-            p2_proj = seg_p2_target.point_projection(p2) # p2 is ShapelyPoint
+    print(f"Raster Sub-path Creation: Extracted {len(sub_paths_generated)} sub-paths from skeleton.")
 
-            # Ensure projections are valid (Shapely points are never None, check coordinates if needed)
-            # Check if projection resulted in a valid point (e.g., not NaN if inputs were bad)
-            if not (p1_proj and p2_proj and \
-                    not math.isnan(p1_proj.x) and not math.isnan(p1_proj.y) and \
-                    not math.isnan(p2_proj.x) and not math.isnan(p2_proj.y)):
-                 print(f"Warning: Invalid projection calculated for breakpoint on contour {j} level {i}")
-                 continue
+    # Optional: Further processing like simplifying paths, ordering, etc.
 
-            # --- Step 9: Store breakpoint information and connecting segments ---
-            # Store the four key points defining the break and connection.
-            contour.breakpoints.append((p1, p2, p1_proj, p2_proj))
-            # Store the conceptual connecting segments (will be added as subpaths later)
-            contour.connecting_segments.append(Segment(p1, p1_proj))
-            contour.connecting_segments.append(Segment(p2, p2_proj))
-            # Note: Breakpoints are stored on the contour they originate from (level i).
-            # The sub-path formation logic will use this information.
+    return sub_paths_generated
 
-    return contours_with_breaks
-
-
-#-----------------------------------------------------------------------------
-# 5. Algorithm 3: Forming sub-paths
-#-----------------------------------------------------------------------------
-
-def form_sub_paths(contours_with_breaks: List[List[Contour]]) -> List[SubPath]:
-    """
-    Forms open sub-paths by breaking contours at the identified breakpoints.
-
-    Args:
-        contours_with_breaks: Contours with breakpoint information added.
-
-    Returns:
-        A list of SubPath objects.
-    """
-    list_sub_paths: List[SubPath] = []
-    processed_contours = copy.deepcopy(contours_with_breaks) # Work on a copy
-
-    for i in range(len(processed_contours)):
-        for j in range(len(processed_contours[i])):
-            contour = processed_contours[i][j]
-            if not contour.points or len(contour.points) < 3: continue
-
-            # Get original contour points (excluding connecting segments for now)
-            # Need to handle the breaks introduced by connecting segments.
-            # The breakpoints p1, p2 on *this* contour mark the interruptions.
-
-            # Create a list of all points, including breakpoints p1 and p2
-            all_points_on_contour = contour.points[:-1] # Exclude duplicate end point
-            break_indices = set() # Indices where breaks occur
-
-            # Find indices of p1 and p2 points on the contour
-            # This requires inserting p1/p2 into the point list if they aren't vertices
-            # Or, more simply, track the segments interrupted by breaks.
-
-            # Simpler approach: Identify segments that contain p1 or p2 from breakpoints
-            interrupted_segment_indices = set()
-            # Store Shapely Points directly for easier comparison later
-            break_points_on_this_contour: Set[ShapelyPoint] = set()
-
-            for bp_info in contour.breakpoints:
-                p1, p2, _, _ = bp_info # These are ShapelyPoints now
-                break_points_on_this_contour.add(p1)
-                break_points_on_this_contour.add(p2)
-
-                # Find which segments p1 and p2 lie on (or are close to)
-                for k, seg in enumerate(contour.get_segments()):
-                    # Use Shapely distance check
-                    if seg.distance_to_point(p1) < POINT_EQUALITY_TOLERANCE:
-                         interrupted_segment_indices.add(k)
-                    if seg.distance_to_point(p2) < POINT_EQUALITY_TOLERANCE:
-                         interrupted_segment_indices.add(k)
-
-
-            # Traverse the contour point by point, creating subpaths between breaks
-            current_sub_path_points: List[ShapelyPoint] = []
-            if not all_points_on_contour: continue
-
-            start_index = 0
-            num_points = len(all_points_on_contour)
-
-            for k in range(num_points + 1): # Iterate one extra time to handle wrap-around
-                current_idx = k % num_points
-                current_point = all_points_on_contour[current_idx]
-                current_segment_idx = (current_idx - 1 + num_points) % num_points # Segment ending at current_point
-
-                # Add point to current subpath, checking for duplicates using distance
-                if not current_sub_path_points or current_point.distance(current_sub_path_points[-1]) > POINT_EQUALITY_TOLERANCE:
-                     current_sub_path_points.append(current_point)
-
-                # Check if the segment *ending* at this point was a break segment
-                # Or if the point itself is a breakpoint (check set membership)
-                # Need to iterate through set for tolerance check if hash isn't reliable enough
-                is_break_point = any(current_point.distance(bp) < POINT_EQUALITY_TOLERANCE for bp in break_points_on_this_contour)
-                is_break_segment = current_segment_idx in interrupted_segment_indices
-
-                # If we hit a break point/segment AND the subpath is not empty, end the current subpath
-                if (is_break_point or is_break_segment) and len(current_sub_path_points) > 1:
-                    # Check if the *next* point is also a breakpoint (can happen if p1/p2 are vertices)
-                    # Avoid creating tiny subpaths if breaks are adjacent
-                    next_idx = (current_idx + 1) % num_points
-                    next_point = all_points_on_contour[next_idx]
-                    next_point_is_break = any(next_point.distance(bp) < POINT_EQUALITY_TOLERANCE for bp in break_points_on_this_contour)
-                    next_segment_idx = current_idx
-                    next_segment_is_break = next_segment_idx in interrupted_segment_indices
-
-                    # Finalize subpath
-                    list_sub_paths.append(SubPath(current_sub_path_points))
-                    # Start new subpath, potentially starting with the current break point
-                    current_sub_path_points = [current_point]
-
-
-            # Add any remaining points after the loop
-            if len(current_sub_path_points) > 1:
-                 # Check if it closes on itself and matches the first subpath start
-                 first_subpath_start = list_sub_paths[0].points[0] if list_sub_paths and list_sub_paths[0].points else None
-                 last_subpath_end = current_sub_path_points[-1] if current_sub_path_points else None
-                 # Use distance check for merging
-                 if first_subpath_start and last_subpath_end and first_subpath_start.distance(last_subpath_end) < POINT_EQUALITY_TOLERANCE:
-                      # Merge with first subpath
-                      # Ensure no duplicate point is added during merge
-                      merged_points = current_sub_path_points + list_sub_paths[0].points[1:]
-                      list_sub_paths[0] = SubPath(merged_points) # Create new SubPath object
-                 else:
-                      list_sub_paths.append(SubPath(current_sub_path_points))
-
-
-    # Add the connecting segments themselves as subpaths
-    all_connecting_segments: List[Segment] = []
-    for level in processed_contours:
-        for contour in level:
-            all_connecting_segments.extend(contour.connecting_segments)
-
-    for seg in all_connecting_segments:
-        # Ensure connecting segments are not zero length using distance
-        if seg.length() > POINT_EQUALITY_TOLERANCE:
-             list_sub_paths.append(SubPath([seg.p1, seg.p2])) # p1, p2 are ShapelyPoints
-
-    # Final filter for any potentially empty subpaths created
-    list_sub_paths = [sp for sp in list_sub_paths if sp.points]
-
-    return list_sub_paths
 
 #-----------------------------------------------------------------------------
 # 6. Generating continuous path (Connecting Sub-paths) - Linear Scan Method
@@ -829,6 +669,8 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
 
 
+    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+
     #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
@@ -836,18 +678,20 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
-    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
 
 
 
     stl_file_path = os.path.join("models", "wrench.stl")
     #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
 
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+
+    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
 
 
 
@@ -857,7 +701,7 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
     #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
-    stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
+    #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
     #stl_file_path = os.path.join("models", "test", "ring.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
     #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
@@ -865,13 +709,11 @@ if __name__ == '__main__':
     # testing (mine, freecad)
     #stl_file_path = os.path.join("models", "mine", "hex.stl")
 
-    stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
     
     #confirmed working, simple models
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "cuboid.stl")
-    stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
     #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
     #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
@@ -976,22 +818,25 @@ if __name__ == '__main__':
     #     print(f"  Final Level {i}: {[str(c) for c in level_list]}")
 
 
-    # --- 4. Find Breakpoints (Algorithm 2) ---
-    print("\n--- Finding Breakpoints ---")
-    contours_with_breaks = find_breakpoints(leveled_contours, line_spacing, layer_to_process_idx, n_layers_period)
-    bp_count = sum(len(c.breakpoints) for level in contours_with_breaks for c in level)
-    print(f"Total breakpoints found: {bp_count}")
-
-
-    # --- 5. Form Sub-paths (Algorithm 3) ---
-    print("\n--- Forming Sub-paths ---")
-    sub_paths = form_sub_paths(contours_with_breaks)
+    # --- 4/5. Create Sub-paths via Rasterization (Replaces Algo 2 & 3) ---
+    print("\n--- Creating Sub-paths via Rasterization ---")
+    raster_resolution = config.get('raster_resolution', 0.05) # Default if not in config
+    raster_line_thickness = config.get('raster_line_thickness', 2) # Default if not in config
+    sub_paths = create_sub_paths_via_rasterization(
+        leveled_contours,
+        line_spacing,
+        resolution=raster_resolution,
+        raster_line_thickness=raster_line_thickness
+    )
+    if not sub_paths:
+         sys.exit("Failed to create sub-paths using rasterization.")
     print(f"Total sub-paths created: {len(sub_paths)}")
 
 
-    # --- 6. Connect Sub-paths ---
+    # --- 6. Connect Sub-paths (Using Linear Scan Method) ---
+    # The sub-paths from rasterization should ideally form a connected graph
     print("\n--- Connecting Sub-paths ---")
-    final_toolpath = connect_sub_paths(sub_paths)
+    final_toolpath = connect_sub_paths(sub_paths) # Use the existing linear scan connector
     print(f"Total points in final toolpath: {len(final_toolpath)}")
 
     # Path to visualize is the result of the connection
