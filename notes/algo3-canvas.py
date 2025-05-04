@@ -406,7 +406,7 @@ def create_sub_paths(
 ) -> List[SubPath]:
     """
     Creates sub-paths by finding optimal breakpoints between contours.
-    This is a placeholder implementation that simply creates one sub-path per contour.
+    Identifies breakpoints in each contour that will be used to connect one contour to another.
     
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
@@ -416,7 +416,7 @@ def create_sub_paths(
     Returns:
         A list of SubPath objects representing the connected contour segments.
     """
-    print("Using placeholder sub-path creation method")
+    print("Finding breakpoints between contours...")
     
     # Flatten contours by level for processing
     contours_by_level = {}
@@ -430,14 +430,61 @@ def create_sub_paths(
 
     print(f"Starting with {len(all_contours)} contours.")
     
-    # Create a simple sub-path for each contour
+    # Get the breakpoint period from config
+    config = get_config()
+    n_layers_period = config.get('breakpoint_period', 5)  # Default to 5 if not specified
+    
+    # Find breakpoints between adjacent contour levels
+    all_breakpoints = []
+    
+    # Process each level (except the last one)
+    for level_idx in range(len(contours_by_level) - 1):
+        current_level_contours = contours_by_level[level_idx]
+        next_level_contours = contours_by_level[level_idx + 1]
+        
+        # Skip if either level has no contours
+        if not current_level_contours or not next_level_contours:
+            continue
+            
+        print(f"Finding breakpoints between level {level_idx} and {level_idx + 1}")
+        
+        # Process each contour in the current level
+        for current_contour in current_level_contours:
+            # Find candidate neighboring contours in the next level
+            for next_contour in next_level_contours:
+                # Find breakpoints between these two contours
+                breakpoints = find_breakpoints_between_contours(
+                    current_contour, 
+                    next_contour, 
+                    line_spacing,
+                    n_layers_period
+                )
+                
+                if breakpoints:
+                    # Store breakpoints in the contour object
+                    current_contour.breakpoints.extend(breakpoints)
+                    all_breakpoints.extend(breakpoints)
+                    
+                    # Create connecting segments between breakpoints
+                    for p1, p2, p1_proj, p2_proj in breakpoints:
+                        current_contour.connecting_segments.append(Segment(p1, p1_proj))
+                        current_contour.connecting_segments.append(Segment(p2, p2_proj))
+    
+    print(f"Found {len(all_breakpoints)} breakpoints across all contours")
+    
+    # Create sub-paths from contours, incorporating breakpoints
     sub_paths = []
     for level_idx, level_contours in contours_by_level.items():
         for contour_idx, contour in enumerate(level_contours):
             if contour.points and len(contour.points) >= 2:
+                # Create a sub-path from the contour points
                 sub_paths.append(SubPath(contour.points))
+                
+                # Create additional sub-paths for connecting segments if they exist
+                for segment in contour.connecting_segments:
+                    sub_paths.append(SubPath([segment.p1, segment.p2]))
     
-    print(f"Created {len(sub_paths)} sub-paths from contours.")
+    print(f"Created {len(sub_paths)} sub-paths from contours and connections")
     
     # Create a wrapper object to hold both the sub_paths and skeleton data
     class SubPathsWithSkeletonData:
@@ -455,14 +502,86 @@ def create_sub_paths(
         def __iter__(self):
             return iter(self.paths)
     
-    # Return the wrapper object with sub_paths and empty skeleton data
+    # Return the wrapper object with sub_paths and skeleton data including breakpoints
     return SubPathsWithSkeletonData(
         sub_paths,
         {
             'contours_by_level': contours_by_level,
-            'all_breakpoints': []
+            'all_breakpoints': all_breakpoints
         }
     )
+
+def find_breakpoints_between_contours(
+    current_contour: Contour,
+    next_contour: Contour,
+    line_spacing: float,
+    n_layers_period: int
+) -> List[Tuple[ShapelyPoint, ShapelyPoint, ShapelyPoint, ShapelyPoint]]:
+    """
+    Finds breakpoints between two contours.
+    
+    Args:
+        current_contour: The current contour
+        next_contour: The neighboring contour
+        line_spacing: The spacing between contours
+        n_layers_period: How often to place breakpoints
+        
+    Returns:
+        List of breakpoint tuples (p1, p2, p1_proj, p2_proj)
+    """
+    breakpoints = []
+    
+    # Skip if either contour is invalid
+    if not current_contour.points or len(current_contour.points) < 2:
+        return breakpoints
+    if not next_contour.points or len(next_contour.points) < 2:
+        return breakpoints
+    
+    # Get the total length of the current contour
+    total_length = current_contour.length()
+    
+    # Calculate how many breakpoints to create based on contour length and n_layers_period
+    # We want approximately one breakpoint every (line_spacing * n_layers_period) distance
+    target_spacing = line_spacing * n_layers_period
+    num_breakpoints = max(1, int(total_length / target_spacing))
+    
+    # For each breakpoint position
+    for i in range(num_breakpoints):
+        # Calculate the position along the contour for p1
+        p1_distance = (i / num_breakpoints) * total_length
+        
+        # Get the point at this distance and its segment
+        p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
+        
+        if p1 is None or p1_segment is None:
+            continue
+            
+        # Calculate the position for p2, which is line_spacing distance from p1 along the contour
+        p2_distance = p1_distance + line_spacing
+        if p2_distance > total_length:
+            p2_distance = p2_distance - total_length  # Wrap around
+            
+        # Get the point at this distance and its segment
+        p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+        
+        if p2 is None or p2_segment is None:
+            continue
+            
+        # Find the closest segments on the next contour
+        p1_proj_segment, p1_dist, _ = find_closest_segment_to_point(p1, next_contour)
+        p2_proj_segment, p2_dist, _ = find_closest_segment_to_point(p2, next_contour)
+        
+        if p1_proj_segment is None or p2_proj_segment is None:
+            continue
+            
+        # Project p1 and p2 onto the next contour
+        p1_proj = p1_proj_segment.point_projection(p1)
+        p2_proj = p2_proj_segment.point_projection(p2)
+        
+        # Add the breakpoint
+        breakpoints.append((p1, p2, p1_proj, p2_proj))
+    
+    return breakpoints
 
 
 #-----------------------------------------------------------------------------
@@ -1034,14 +1153,14 @@ if __name__ == '__main__':
     #     print(f"  Final Level {i}: {[str(c) for c in level_list]}")
 
 
-    # --- 4/5. Create Sub-paths via Rasterization (Replaces Algo 2 & 3) ---
-    print("\n--- Creating Sub-paths via Rasterization ---")
+    # --- 4/5. Create Sub-paths with Breakpoints ---
+    print("\n--- Creating Sub-paths with Breakpoints ---")
     raster_resolution = config.get('raster_resolution', 0.05) # Default if not in config
+    n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
     sub_paths = create_sub_paths(
         leveled_contours,
         line_spacing,
         resolution=raster_resolution
-        # Removed raster_line_thickness argument
     )
     if not sub_paths:
          sys.exit("Failed to create sub-paths using rasterization.")
