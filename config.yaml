@@ -5,7 +5,7 @@ max_layers_to_process: 1                # For quicker test cycles
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 0.2
+toolpath_width: 1.25
 # Height of each layer in mm
 layer_height: 0.5
 
@@ -31,9 +31,14 @@ visualize_problematic_segments: False
 visualize_continuous_path: true
 
 
-### Rasterization Sub-path Creation Parameters
+### Sub-path Creation Parameters
 raster_resolution: 0.01                 # mm per pixel for rasterization (smaller = higher res)
-# raster_line_thickness removed, now uses thickness=1
+breakpoint_period: 1                    # Place breakpoints every N layers along contours
+
+### Breakpoint Connection Parameters
+max_breakpoint_distance: 2.0            # Maximum distance (mm) to consider for breakpoint connections
+enable_connecting_paths: true           # Create explicit connecting paths between breakpoints
+visualize_breakpoints: true             # Visualize breakpoints between contours
 
 
 ### Path Resampling (Optional Post-processing)

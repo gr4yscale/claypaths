@@ -1270,6 +1270,110 @@ def visualize_final_toolpath(
         print(f"\nError during visualization: {e}")
 
 
+def visualize_breakpoint_connections(connection_metadata: Dict, layer_to_process_idx: int):
+    """
+    Visualizes the breakpoint connections between contours.
+    
+    Args:
+        connection_metadata: Dictionary with connection information
+        layer_to_process_idx: The layer index being processed
+    """
+    print("\n--- Visualizing Breakpoint Connections ---")
+    if not connection_metadata:
+        print("No connection metadata available for visualization.")
+        return
+        
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Extract data from connection metadata
+        contour_to_subpath = connection_metadata.get('contour_to_subpath', {})
+        breakpoint_connections = connection_metadata.get('breakpoint_connections', {})
+        contour_breakpoints = connection_metadata.get('contour_breakpoints', {})
+        all_breakpoints = connection_metadata.get('all_breakpoints', [])
+        contours_by_level = connection_metadata.get('contours_by_level', {})
+        
+        if not contours_by_level or not all_breakpoints:
+            print("Insufficient data for breakpoint visualization.")
+            return
+            
+        plt.figure(figsize=(12, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')
+        
+        # Plot contours by level with different colors
+        colors = plt.cm.viridis(np.linspace(0, 1, len(contours_by_level)))
+        for i, (level_idx, contours) in enumerate(contours_by_level.items()):
+            for contour in contours:
+                if contour._line and not contour._line.is_empty:
+                    x, y = contour._line.xy
+                    ax.plot(x, y, color=colors[i], linestyle='-', linewidth=1.0, 
+                           label=f'Level {level_idx}' if f'Level {level_idx}' not in plt.gca().get_legend_handles_labels()[1] else "")
+        
+        # Plot breakpoints and their connections
+        for bp_idx, bp in enumerate(all_breakpoints):
+            p1, p2, p1_proj, p2_proj = bp
+            
+            # Plot the breakpoint pairs
+            ax.plot(p1.x, p1.y, 'ro', markersize=5, label='Breakpoint P1' if 'Breakpoint P1' not in plt.gca().get_legend_handles_labels()[1] else "")
+            ax.plot(p2.x, p2.y, 'bo', markersize=5, label='Breakpoint P2' if 'Breakpoint P2' not in plt.gca().get_legend_handles_labels()[1] else "")
+            
+            # Plot the projected points
+            ax.plot(p1_proj.x, p1_proj.y, 'go', markersize=5, label='Projected P1' if 'Projected P1' not in plt.gca().get_legend_handles_labels()[1] else "")
+            ax.plot(p2_proj.x, p2_proj.y, 'mo', markersize=5, label='Projected P2' if 'Projected P2' not in plt.gca().get_legend_handles_labels()[1] else "")
+            
+            # Plot the connections
+            ax.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'r--', linewidth=1.0, alpha=0.7, 
+                   label='P1 Connection' if 'P1 Connection' not in plt.gca().get_legend_handles_labels()[1] else "")
+            ax.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'b--', linewidth=1.0, alpha=0.7,
+                   label='P2 Connection' if 'P2 Connection' not in plt.gca().get_legend_handles_labels()[1] else "")
+            
+            # Add breakpoint index labels
+            ax.text(p1.x, p1.y, f'{bp_idx}', fontsize=8, ha='right', va='bottom')
+            ax.text(p2.x, p2.y, f'{bp_idx}', fontsize=8, ha='right', va='bottom')
+        
+        # Plot the contour-to-contour connections from contour_breakpoints
+        for source_contour, bp_infos in contour_breakpoints.items():
+            for bp_info in bp_infos:
+                target_contour = bp_info['target_contour']
+                bp_idx = bp_info['bp_idx']
+                
+                # Find the centroids of source and target contours
+                if source_contour._line and not source_contour._line.is_empty and target_contour._line and not target_contour._line.is_empty:
+                    source_centroid = source_contour._line.centroid
+                    target_centroid = target_contour._line.centroid
+                    
+                    # Draw a light connection between contour centroids
+                    ax.plot([source_centroid.x, target_centroid.x], [source_centroid.y, target_centroid.y], 
+                           'k:', linewidth=0.5, alpha=0.3)
+                    
+                    # Add text label with breakpoint index
+                    mid_x = (source_centroid.x + target_centroid.x) / 2
+                    mid_y = (source_centroid.y + target_centroid.y) / 2
+                    ax.text(mid_x, mid_y, f'BP{bp_idx}', fontsize=8, ha='center', va='center', 
+                           bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        
+        plt.title(f"Breakpoint Connections - Layer {layer_to_process_idx}")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        
+        # Create legend with unique entries
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys(), fontsize='small', loc='best')
+        
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.tight_layout()
+        plt.show()
+        
+    except ImportError:
+        print("\nInstall matplotlib to visualize the breakpoint connections: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during breakpoint visualization: {e}")
+        import traceback
+        traceback.print_exc()
+
 def visualize_resampled_path(
     resampled_path: List[ShapelyPoint],
     segment_length: float,
@@ -1530,16 +1634,17 @@ if __name__ == '__main__':
               stl_file_path
          )
          
-    # --- 7b. Optional: Visualize Contours ---
-    # Simplified visualization without breakpoints
+    # --- 7b. Optional: Visualize Contours and Breakpoints ---
     if config.get('visualize_breakpoints', True) and hasattr(sub_paths, 'skeleton_data') and sub_paths.skeleton_data:
         try:
             import matplotlib.pyplot as plt
             
             # Unpack the data
             contours_by_level = sub_paths.skeleton_data.get('contours_by_level', {})
+            all_breakpoints = sub_paths.skeleton_data.get('all_breakpoints', [])
             
             if contours_by_level:
+                # Visualize contours
                 plt.figure(figsize=(10, 10))
                 
                 # Plot contours
@@ -1549,14 +1654,30 @@ if __name__ == '__main__':
                             x, y = contour._line.xy
                             plt.plot(x, y, '-', linewidth=1, alpha=0.7)
                 
-                plt.title(f"Contours by Level - Layer {layer_to_process_idx}")
+                # Plot breakpoints and connections
+                if all_breakpoints:
+                    for p1, p2, p1_proj, p2_proj in all_breakpoints:
+                        # Plot the breakpoints
+                        plt.plot(p1.x, p1.y, 'ro', markersize=4)
+                        plt.plot(p2.x, p2.y, 'bo', markersize=4)
+                        plt.plot(p1_proj.x, p1_proj.y, 'go', markersize=4)
+                        plt.plot(p2_proj.x, p2_proj.y, 'mo', markersize=4)
+                        
+                        # Plot the connections
+                        plt.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'r--', linewidth=0.8, alpha=0.6)
+                        plt.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'b--', linewidth=0.8, alpha=0.6)
+                
+                plt.title(f"Contours and Breakpoints - Layer {layer_to_process_idx}")
                 plt.axis('equal')
                 plt.tight_layout()
                 plt.show()
+                
+                # Call the dedicated breakpoint visualization function
+                visualize_breakpoint_connections(connection_metadata, layer_to_process_idx)
             else:
                 print("Contour data not available for visualization")
         except Exception as e:
-            print(f"Error visualizing contours: {e}")
+            print(f"Error visualizing contours and breakpoints: {e}")
 
     # --- 8. Optional: Visualize Resampled Path Separately ---
     if resampled_toolpath and config.get('visualize_resampled_path', True): # Add new config flag if needed
