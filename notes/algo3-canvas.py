@@ -22,6 +22,13 @@ except ImportError:
     cv2_available = False
     print("Warning: OpenCV (cv2) or SciPy not found. Rasterization approach will not work.")
 
+try:
+    import networkx as nx
+    nx_available = True
+except ImportError:
+    nx_available = False
+    print("Warning: NetworkX not found. Path simplification/branch removal will be skipped.")
+
 
 # Import project modules
 from src.stl_loader import load_stl
@@ -653,12 +660,107 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
 
 
 #-----------------------------------------------------------------------------
-# 7. Path Resampling (Uniform Segment Length)
+# 7. Path Simplification and Resampling
 #-----------------------------------------------------------------------------
+
+def _simplify_path_network_nx(path: List[ShapelyPoint], tolerance: float = 1e-6) -> List[ShapelyPoint]:
+    """
+    Simplifies a path network (potentially with branches) by finding the longest path
+    between endpoints using networkx.
+
+    Args:
+        path: Input path (list of Shapely Points), potentially from skeletonization.
+        tolerance: Tolerance for considering points coincident.
+
+    Returns:
+        Simplified path (list of Shapely Points) representing the longest path.
+    """
+    if not nx_available:
+        print("Simplification: Skipping because networkx is not installed.")
+        return path
+    if not path or len(path) < 2:
+        return path
+
+    print("Simplifying path network using networkx...")
+    G = nx.Graph()
+    node_coords = {} # Map node ID to ShapelyPoint
+    point_to_node_id = {} # Map rounded (x,y) tuple to node ID
+    next_node_id = 0
+
+    # Helper to get or create node ID for a point
+    def get_node_id(p: ShapelyPoint) -> int:
+        nonlocal next_node_id
+        # Round coordinates to handle floating point inaccuracies near junctions
+        coord_key = (round(p.x / tolerance), round(p.y / tolerance))
+        if coord_key not in point_to_node_id:
+            node_id = next_node_id
+            point_to_node_id[coord_key] = node_id
+            node_coords[node_id] = p # Store original point
+            G.add_node(node_id)
+            next_node_id += 1
+        return point_to_node_id[coord_key]
+
+    # Build graph edges
+    for i in range(len(path) - 1):
+        p1 = path[i]
+        p2 = path[i+1]
+        dist = p1.distance(p2)
+        if dist > tolerance: # Only add edges for distinct points
+            u = get_node_id(p1)
+            v = get_node_id(p2)
+            if u != v: # Avoid self-loops
+                G.add_edge(u, v, weight=dist)
+
+    # Find endpoints (degree 1 nodes)
+    endpoints = [node for node, degree in G.degree() if degree == 1]
+    print(f"Simplification: Found {len(endpoints)} endpoints, {len(G.nodes)} nodes, {len(G.edges)} edges.")
+
+    if len(endpoints) < 2:
+        # If it's a single closed loop or isolated points/segments, buffer(0) might handle it.
+        # Or, if no endpoints, maybe it's already a simple path?
+        print("Simplification: Path has fewer than 2 endpoints. Returning original path for resampling.")
+        # Could try returning the path corresponding to the largest connected component if G is disconnected
+        if G.number_of_nodes() > 0:
+             largest_cc = max(nx.connected_components(G), key=len)
+             # Attempt to reconstruct path from component (might not be ordered correctly)
+             # For now, just return original path
+             pass
+        return path
+
+    longest_path_nodes = []
+    max_length = 0.0
+
+    # Find the longest simple path between all pairs of endpoints
+    import itertools
+    for u, v in itertools.combinations(endpoints, 2):
+        # Check if paths exist between the pair
+        if nx.has_path(G, u, v):
+            for simple_path_nodes in nx.all_simple_paths(G, source=u, target=v):
+                current_length = 0.0
+                # Calculate geometric length using original points
+                for i in range(len(simple_path_nodes) - 1):
+                    p1 = node_coords[simple_path_nodes[i]]
+                    p2 = node_coords[simple_path_nodes[i+1]]
+                    current_length += p1.distance(p2)
+
+                if current_length > max_length:
+                    max_length = current_length
+                    longest_path_nodes = simple_path_nodes
+
+    if not longest_path_nodes:
+        print("Simplification: Could not find any path between endpoints. Returning original path.")
+        return path
+
+    # Convert node IDs back to Shapely Points
+    simplified_path = [node_coords[node_id] for node_id in longest_path_nodes]
+    print(f"Simplification: Longest path found with {len(simplified_path)} points, length {max_length:.2f}.")
+    return simplified_path
+
 
 def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> List[ShapelyPoint]:
     """
-    Resamples a path to have approximately uniform segment lengths.
+    Simplifies path branches using networkx (if available) and resamples
+    the path to have approximately uniform segment lengths.
 
     Args:
         path: The input path as a list of Shapely Points.
@@ -667,68 +769,27 @@ def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> 
     Returns:
         A resampled path as a list of Shapely Points.
     """
-    if not path or len(path) < 2 or segment_length <= 1e-6:
-        return path # Cannot resample
+    if not path or len(path) < 2:
+        return path # Cannot process
 
-    # Create LineString and attempt to clean self-intersections/invalid geometry
-    try:
-        line = ShapelyLineString(path)
-        # buffer(0) can fix invalid geometries like self-intersections
-        cleaned_geom = line.buffer(0)
-
-        if cleaned_geom.is_empty:
-             print("Resampling: buffer(0) resulted in empty geometry. Returning original path.")
-             return path
-        elif isinstance(cleaned_geom, ShapelyLineString):
-            line = cleaned_geom
-            print("Resampling: Applied buffer(0) cleanup, result is LineString.")
-        elif isinstance(cleaned_geom, MultiLineString):
-             # If buffer(0) results in multiple lines, pick the longest one
-             print("Resampling: buffer(0) resulted in MultiLineString, selecting longest.")
-             line = max(cleaned_geom.geoms, key=lambda l: l.length)
-        elif isinstance(cleaned_geom, ShapelyPolygon): # Use alias
-             # If it becomes a polygon (e.g., input was closed loop), use its exterior
-             print("Resampling: buffer(0) resulted in Polygon, using exterior.")
-             line = cleaned_geom.exterior
-             if not isinstance(line, ShapelyLineString): # Use alias
-                  print("Resampling: Polygon exterior is not LineString. Using original path.")
-                  line = ShapelyLineString(path) # Fallback
+    # --- 1. Branch Simplification (if networkx is available) ---
+    if nx_available:
+        print("Resampling: Attempting branch simplification using networkx...")
+        simplified_path = _simplify_path_network_nx(path, tolerance=segment_length * 0.1) # Use tolerance relative to segment length
+        if not simplified_path or len(simplified_path) < 2:
+             print("Resampling: Branch simplification resulted in invalid path or path too short. Using original path for resampling.")
+             simplified_path = path # Fallback
         else:
-             print(f"Resampling: buffer(0) resulted in unexpected geometry type ({type(cleaned_geom)}). Using original line.")
-             # Fallback to original line if cleanup fails or returns something weird
-             line = ShapelyLineString(path)
+             print(f"Resampling: Branch simplification successful. Proceeding with {len(simplified_path)} points.")
+    else:
+         print("Resampling: Skipping branch simplification because networkx is not installed.")
+         simplified_path = path
 
-    except Exception as e:
-        print(f"Resampling: Error during buffer(0) cleanup: {e}. Using original line.")
-        line = ShapelyLineString(path)
+    # --- 2. Resampling ---
+    if not simplified_path or len(simplified_path) < 2 or segment_length <= 1e-6:
+        print("Resampling: Path too short or segment length invalid after potential simplification. Returning simplified (or original) path.")
+        return simplified_path # Cannot resample further
 
-
-    total_length = line.length
-    if total_length < segment_length:
-        print("Resampling: Path length shorter than segment length after cleanup.")
-        return path # Path is shorter than desired segment length
-
-    print(f"Resampling path (length {total_length:.2f}) with target segment length {segment_length:.3f}...")
-
-    num_segments = math.ceil(total_length / segment_length)
-    resampled_path: List[ShapelyPoint] = []
-
-    for i in range(num_segments + 1):
-        distance = min(i * segment_length, total_length) # Ensure we don't exceed total length
-        point = line.interpolate(distance)
-        # Avoid adding duplicate points if interpolation yields the same point
-        if not resampled_path or point.distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
-            resampled_path.append(point)
-
-    # Ensure the very last point of the original path is included if not already captured
-    if resampled_path and path[-1].distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
-         # Check if the last interpolated point is very close to the end
-         if total_length - (num_segments * segment_length) > POINT_EQUALITY_TOLERANCE:
-              resampled_path.append(path[-1])
-
-
-    print(f"Resampled path has {len(resampled_path)} points.")
-    return resampled_path
 
 
 #-----------------------------------------------------------------------------
@@ -828,7 +889,7 @@ def visualize_resampled_path(
         tp_x = [p.x for p in resampled_path]
         tp_y = [p.y for p in resampled_path]
         ax.plot(tp_x, tp_y, 'r-', linewidth=0.8, label='Resampled Path')
-        ax.plot(tp_x, tp_y, 'r.', markersize=4, label='Resampled Points') # Mark points
+        # ax.plot(tp_x, tp_y, 'r.', markersize=4, label='Resampled Points') # Mark points (Removed)
         ax.plot(tp_x[0], tp_y[0], 'go', markersize=8, label='Start') # Mark start
         ax.plot(tp_x[-1], tp_y[-1], 'mo', markersize=8, label='End')   # Mark end
 
@@ -1033,11 +1094,18 @@ if __name__ == '__main__':
 
     # --- 6b. Optional Path Resampling ---
     resampled_toolpath = None # Initialize
-    if config.get('enable_resampling', False):
-        segment_length = config.get('resampling_segment_length', 0.5)
-        resampled_toolpath = resample_path_uniformly(final_toolpath, segment_length=segment_length)
+    if config.get('enable_resampling', True): # Defaulting to True now, user can set to False
+        segment_length = config.get('resampling_segment_length', 0.025) # Use value from config
+        print(f"\n--- Resampling Path (Target Segment Length: {segment_length:.4f} mm) ---")
+        resampled_toolpath = resample_path_uniformly(
+            final_toolpath,
+            segment_length=segment_length
+            # simplify_branches argument removed
+        )
+        print(f"Resampling complete. Final path has {len(resampled_toolpath)} points.")
         path_to_visualize = resampled_toolpath # Visualize the resampled path in the main plot
     else:
+        print("\n--- Resampling Disabled ---")
         # Path to visualize is the result of the connection if resampling is disabled
         path_to_visualize = final_toolpath
 
