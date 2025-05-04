@@ -662,17 +662,38 @@ def create_sub_paths(
             
             # Check if this junction is between the current and next level
             # by checking distances to both levels
-            current_level_dist = cv2.pointPolygonTest(
-                np.array([world_to_image(p.x, p.y) for c in current_contours for p in c.points], dtype=np.int32),
-                (junction_x, junction_y),
-                True
-            ) * resolution
+            # Convert contour points to a format OpenCV can use
+            current_contour_points = []
+            for c in current_contours:
+                contour_points = []
+                for p in c.points:
+                    img_x, img_y = world_to_image(p.x, p.y)
+                    contour_points.append([img_x, img_y])
+                if len(contour_points) > 2:  # Need at least 3 points for a valid contour
+                    current_contour_points.append(np.array(contour_points, dtype=np.int32))
             
-            next_level_dist = cv2.pointPolygonTest(
-                np.array([world_to_image(p.x, p.y) for c in next_contours for p in c.points], dtype=np.int32),
-                (junction_x, junction_y),
-                True
-            ) * resolution
+            next_contour_points = []
+            for c in next_contours:
+                contour_points = []
+                for p in c.points:
+                    img_x, img_y = world_to_image(p.x, p.y)
+                    contour_points.append([img_x, img_y])
+                if len(contour_points) > 2:  # Need at least 3 points for a valid contour
+                    next_contour_points.append(np.array(contour_points, dtype=np.int32))
+            
+            # Calculate distances if contours are valid
+            current_level_dist = float('inf')
+            next_level_dist = float('inf')
+            
+            if current_contour_points:
+                for contour in current_contour_points:
+                    dist = cv2.pointPolygonTest(contour, (int(junction_x), int(junction_y)), True) * resolution
+                    current_level_dist = min(current_level_dist, abs(dist))
+            
+            if next_contour_points:
+                for contour in next_contour_points:
+                    dist = cv2.pointPolygonTest(contour, (int(junction_x), int(junction_y)), True) * resolution
+                    next_level_dist = min(next_level_dist, abs(dist))
             
             # Only consider junctions that are close to both levels
             max_distance = line_spacing * config.get('max_breakpoint_distance', 1.2)
@@ -976,7 +997,7 @@ def create_sub_paths(
 
 def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     """
-    Connects sub-paths into a single continuous global toolpath using junction points
+    Connects sub-paths into a single continuous global toolpath using breakpoints
     from skeleton analysis to create an optimal path.
 
     Args:
@@ -990,20 +1011,10 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
 
     # Check if we have skeleton data available
     skeleton_data = None
-    junction_points_direct = []
     
     if hasattr(sub_paths, 'skeleton_data'):
         skeleton_data = sub_paths.skeleton_data
         sub_paths_list = sub_paths.paths
-        
-        # Try to get junction points directly from the SubPathsWithSkeletonData object
-        if hasattr(sub_paths, 'junction_points'):
-            junction_points_direct = sub_paths.junction_points
-            print(f"Directly accessing {len(junction_points_direct)} junction points from SubPathsWithSkeletonData object")
-            
-            # Debug: Print a few junction points to verify they're valid
-            if junction_points_direct and len(junction_points_direct) > 0:
-                print(f"Sample junction point: {junction_points_direct[0]}")
         
         # Store skeleton data in the SubPath class for visualization
         SubPath.skeleton_data = skeleton_data
@@ -1015,140 +1026,29 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     if not remaining_sub_paths:
         return []
 
-    # Check if we have junction points in the skeleton data or directly from the object
-    junction_points_world = []
-    
-    # Debug the junction points situation
-    if hasattr(sub_paths, 'junction_points'):
-        print(f"DEBUG: sub_paths has junction_points attribute with {len(sub_paths.junction_points)} points")
-    else:
-        print("DEBUG: sub_paths does NOT have junction_points attribute")
-        
-    if skeleton_data and 'junction_points_world' in skeleton_data:
-        print(f"DEBUG: skeleton_data has junction_points_world with {len(skeleton_data['junction_points_world'])} points")
-    else:
-        print("DEBUG: skeleton_data does NOT have junction_points_world key")
-    
-    # First try to use the directly accessed junction points
-    if junction_points_direct:
-        junction_points_world = junction_points_direct
-        print(f"Using {len(junction_points_world)} junction points accessed directly")
-        
-        # Verify the junction points are valid Shapely Points
-        if not all(isinstance(p, ShapelyPoint) for p in junction_points_world):
-            print("Warning: Some junction points are not valid Shapely Points")
-            # Convert any non-Shapely points to Shapely Points
-            junction_points_world = [p if isinstance(p, ShapelyPoint) else ShapelyPoint(p.x, p.y) 
-                                    for p in junction_points_world if hasattr(p, 'x') and hasattr(p, 'y')]
-            print(f"After filtering, using {len(junction_points_world)} valid junction points")
-    # Then try to get them from the skeleton data
-    elif skeleton_data and 'junction_points_world' in skeleton_data:
-        junction_points_world = skeleton_data.get('junction_points_world', [])
-        if junction_points_world:
-            print(f"Using {len(junction_points_world)} junction points from skeleton data")
-            
-            # Verify the junction points are valid Shapely Points
-            if not all(isinstance(p, ShapelyPoint) for p in junction_points_world):
-                print("Warning: Some junction points from skeleton data are not valid Shapely Points")
-                # Convert any non-Shapely points to Shapely Points
-                junction_points_world = [p if isinstance(p, ShapelyPoint) else ShapelyPoint(p.x, p.y) 
-                                        for p in junction_points_world if hasattr(p, 'x') and hasattr(p, 'y')]
-                print(f"After filtering, using {len(junction_points_world)} valid junction points")
-        else:
-            print("No junction points found in skeleton data dictionary")
-    
-    # Also check for breakpoints which can be used to create junction points
+    # Check for breakpoints in the skeleton data
     all_breakpoints = []
     if skeleton_data and 'all_breakpoints' in skeleton_data:
         all_breakpoints = skeleton_data.get('all_breakpoints', [])
         print(f"Found {len(all_breakpoints)} breakpoints in skeleton data")
         
-        # If we have breakpoints but no junction points, create junction points from breakpoints
-        if all_breakpoints and not junction_points_world:
+        if all_breakpoints:
             contours_by_level = skeleton_data.get('contours_by_level', {})
             if contours_by_level:
-                print("Creating junction points from breakpoints")
-                for bp in all_breakpoints:
-                    current_level, current_idx, current_point_idx, next_level, next_idx, next_point_idx = bp
-                    
-                    # Get the actual contours
-                    if (current_level in contours_by_level and current_idx < len(contours_by_level[current_level]) and
-                        next_level in contours_by_level and next_idx < len(contours_by_level[next_level])):
-                        
-                        current_contour = contours_by_level[current_level][current_idx]
-                        next_contour = contours_by_level[next_level][next_idx]
-                        
-                        if (current_point_idx < len(current_contour.points) and
-                            next_point_idx < len(next_contour.points)):
-                            
-                            # Get the actual points
-                            p1 = current_contour.points[current_point_idx]
-                            p2 = next_contour.points[next_point_idx]
-                            
-                            # Create a junction point at the midpoint between the two points
-                            mid_x = (p1.x + p2.x) / 2
-                            mid_y = (p1.y + p2.y) / 2
-                            junction_point = ShapelyPoint(mid_x, mid_y)
-                            
-                            # Add to junction points list
-                            junction_points_world.append(junction_point)
-                
-                print(f"Created {len(junction_points_world)} junction points from breakpoints")
-        
-    # Check if we have any junction points to use
-    if junction_points_world:
-        print(f"Using {len(junction_points_world)} junction points for path connection")
-        # Make a copy to avoid any reference issues
-        junction_points_copy = junction_points_world.copy()
-        return connect_using_junction_points(remaining_sub_paths, junction_points_copy)
-    elif all_breakpoints:
-        # If we have breakpoints but no junction points, create junction points from breakpoints
-        print("Creating junction points from breakpoints for connection")
-        bp_junction_points = []
-        
-        # Create junction points at the midpoint of each breakpoint connection
-        for bp in all_breakpoints:
-            current_level, current_idx, current_point_idx, next_level, next_idx, next_point_idx = bp
-            
-            # Get the actual contours
-            if (current_level in contours_by_level and current_idx < len(contours_by_level[current_level]) and
-                next_level in contours_by_level and next_idx < len(contours_by_level[next_level])):
-                
-                current_contour = contours_by_level[current_level][current_idx]
-                next_contour = contours_by_level[next_level][next_idx]
-                
-                if (current_point_idx < len(current_contour.points) and
-                    next_point_idx < len(next_contour.points)):
-                    
-                    # Get the actual points
-                    p1 = current_contour.points[current_point_idx]
-                    p2 = next_contour.points[next_point_idx]
-                    
-                    # Create a junction point at the midpoint between the two points
-                    mid_x = (p1.x + p2.x) / 2
-                    mid_y = (p1.y + p2.y) / 2
-                    junction_point = ShapelyPoint(mid_x, mid_y)
-                    
-                    # Add to junction points list
-                    bp_junction_points.append(junction_point)
-        
-        if bp_junction_points:
-            print(f"Created {len(bp_junction_points)} junction points from breakpoints for connection")
-            return connect_using_junction_points(remaining_sub_paths, bp_junction_points)
-        else:
-            print("No junction points available, using distance-based connection")
-            return connect_using_distance(remaining_sub_paths)
-    else:
-        print("No junction points available, using distance-based connection")
-        return connect_using_distance(remaining_sub_paths)
+                print("Using breakpoints for path connection")
+                return connect_using_breakpoints(remaining_sub_paths, all_breakpoints, contours_by_level)
+    
+    print("No breakpoints available, using distance-based connection")
+    return connect_using_distance(remaining_sub_paths)
 
-def connect_using_junction_points(sub_paths: List[SubPath], junction_points: List[ShapelyPoint]) -> List[ShapelyPoint]:
+def connect_using_breakpoints(sub_paths: List[SubPath], all_breakpoints: list, contours_by_level: dict) -> List[ShapelyPoint]:
     """
-    Simplified function to connect sub-paths using junction points from skeleton analysis.
+    Connects sub-paths using the breakpoints identified by the skeleton algorithm.
     
     Args:
         sub_paths: List of SubPath objects
-        junction_points: List of junction points in world coordinates
+        all_breakpoints: List of breakpoints from skeleton analysis
+        contours_by_level: Dictionary mapping level indices to lists of contours
         
     Returns:
         A list of Shapely Points representing the connected path
@@ -1158,79 +1058,124 @@ def connect_using_junction_points(sub_paths: List[SubPath], junction_points: Lis
     if not sub_paths:
         return []
     
-    # Debug the junction points
-    print(f"DEBUG: connect_using_junction_points received {len(junction_points)} junction points")
-    if junction_points and len(junction_points) > 0:
-        print(f"DEBUG: First junction point: {junction_points[0]}")
-    
-    if not junction_points:
-        print("No junction points provided, falling back to distance-based connection")
+    if not all_breakpoints or not contours_by_level:
+        print("No breakpoints provided, falling back to distance-based connection")
         return connect_using_distance(sub_paths)
     
-    print(f"Processing {len(junction_points)} junction points for path connection")
+    print(f"Processing {len(all_breakpoints)} breakpoints for path connection")
     
     # Create a graph representation of the sub-paths and their connections
     from collections import defaultdict
     connection_graph = defaultdict(list)
     
-    # Store junction connections for routing
-    junction_connections = []
+    # Map sub-paths to their indices for easy lookup
+    sub_path_map = {}
+    for i, path in enumerate(sub_paths):
+        if not path.points or len(path.points) < 2:
+            continue
+        # Use the first and last points as keys for quick identification
+        start_key = (path.points[0].x, path.points[0].y)
+        end_key = (path.points[-1].x, path.points[-1].y)
+        sub_path_map[start_key] = (i, False)  # (index, needs_reverse)
+        sub_path_map[end_key] = (i, True)     # (index, needs_reverse)
     
-    # For each junction point, find the closest sub-path endpoints
-    print(f"Building connection graph from {len(junction_points)} junction points")
+    # Store breakpoint connections for routing
+    breakpoint_connections = []
     
-    # Use a much larger threshold for the first pass to ensure we find connections
-    initial_threshold = 15.0  # mm - much larger initial threshold
-    
-    for junction_point in junction_points:
-        closest_paths = []
+    # Process each breakpoint to build the connection graph
+    for bp in all_breakpoints:
+        current_level, current_idx, current_point_idx, next_level, next_idx, next_point_idx = bp
         
-        # Find sub-paths with endpoints close to this junction
-        for i, path in enumerate(sub_paths):
-            if not path.points or len(path.points) < 2:
-                continue
-                
-            try:
-                start_dist = junction_point.distance(path.points[0])
-                end_dist = junction_point.distance(path.points[-1])
-                
-                # Use a larger threshold for the first pass
-                if start_dist < initial_threshold:
-                    closest_paths.append((i, False, start_dist))  # (index, is_start_point, distance)
-                if end_dist < initial_threshold:
-                    closest_paths.append((i, True, end_dist))     # (index, is_end_point, distance)
-            except Exception as e:
-                print(f"Error calculating distance for path {i}: {e}")
-        
-        # If we found multiple paths close to this junction, add connections between them
-        if len(closest_paths) >= 2:
-            # Sort by distance to junction
-            closest_paths.sort(key=lambda x: x[2])
+        # Get the actual contours
+        if (current_level in contours_by_level and current_idx < len(contours_by_level[current_level]) and
+            next_level in contours_by_level and next_idx < len(contours_by_level[next_level])):
             
-            # Add connections between all paths close to this junction
-            for i in range(len(closest_paths)):
-                for j in range(i+1, len(closest_paths)):
-                    path_i, is_end_i, _ = closest_paths[i]
-                    path_j, is_end_j, _ = closest_paths[j]
+            current_contour = contours_by_level[current_level][current_idx]
+            next_contour = contours_by_level[next_level][next_idx]
+            
+            if (current_point_idx < len(current_contour.points) and
+                next_point_idx < len(next_contour.points)):
+                
+                # Get the actual points
+                p1 = current_contour.points[current_point_idx]
+                p2 = next_contour.points[next_point_idx]
+                
+                # Create a connection point at the midpoint between the two points
+                mid_x = (p1.x + p2.x) / 2
+                mid_y = (p1.y + p2.y) / 2
+                connection_point = ShapelyPoint(mid_x, mid_y)
+                
+                # Find the closest sub-paths to these breakpoints
+                closest_paths_to_p1 = []
+                closest_paths_to_p2 = []
+                
+                # Use a reasonable threshold for considering a connection
+                threshold = 2.0  # mm
+                
+                # Find paths close to p1
+                for i, path_i in enumerate(sub_paths):
+                    if not path_i.points or len(path_i.points) < 2:
+                        continue
                     
-                    # Don't connect a path to itself
-                    if path_i != path_j:
-                        # Calculate connection cost (distance between endpoints)
-                        p_i = sub_paths[path_i].points[-1 if is_end_i else 0]
-                        p_j = sub_paths[path_j].points[-1 if is_end_j else 0]
-                        cost = p_i.distance(p_j)
+                    # Check if this path's endpoints are close to p1
+                    start_dist_to_p1 = path_i.points[0].distance(p1)
+                    end_dist_to_p1 = path_i.points[-1].distance(p1)
+                    
+                    if start_dist_to_p1 < threshold:
+                        closest_paths_to_p1.append((i, False, start_dist_to_p1))  # (index, is_end, distance)
+                    if end_dist_to_p1 < threshold:
+                        closest_paths_to_p1.append((i, True, end_dist_to_p1))  # (index, is_end, distance)
+                
+                # Find paths close to p2
+                for j, path_j in enumerate(sub_paths):
+                    if not path_j.points or len(path_j.points) < 2:
+                        continue
+                    
+                    # Check if this path's endpoints are close to p2
+                    start_dist_to_p2 = path_j.points[0].distance(p2)
+                    end_dist_to_p2 = path_j.points[-1].distance(p2)
+                    
+                    if start_dist_to_p2 < threshold:
+                        closest_paths_to_p2.append((j, False, start_dist_to_p2))  # (index, is_end, distance)
+                    if end_dist_to_p2 < threshold:
+                        closest_paths_to_p2.append((j, True, end_dist_to_p2))  # (index, is_end, distance)
+                
+                # Sort by distance
+                closest_paths_to_p1.sort(key=lambda x: x[2])
+                closest_paths_to_p2.sort(key=lambda x: x[2])
+                
+                # Only connect the closest paths to each breakpoint point
+                # This prevents creating too many connections
+                max_connections_per_point = 2  # Limit connections to avoid explosion
+                
+                for p1_info in closest_paths_to_p1[:max_connections_per_point]:
+                    path_i_idx, path_i_is_end, _ = p1_info
+                    
+                    for p2_info in closest_paths_to_p2[:max_connections_per_point]:
+                        path_j_idx, path_j_is_end, _ = p2_info
                         
-                        # Add bidirectional connections
-                        connection_graph[path_i].append((path_j, cost, junction_point))
-                        connection_graph[path_j].append((path_i, cost, junction_point))
-                        
-                        junction_connections.append((path_i, path_j, junction_point))
+                        # Don't connect a path to itself
+                        if path_i_idx != path_j_idx:
+                            # Calculate connection cost
+                            cost = p1.distance(p2)
+                            
+                            # Add bidirectional connections
+                            connection_graph[path_i_idx].append((path_j_idx, cost, connection_point))
+                            connection_graph[path_j_idx].append((path_i_idx, cost, connection_point))
+                            
+                            # Only add unique connections to breakpoint_connections
+                            connection_key = tuple(sorted([path_i_idx, path_j_idx]))
+                            if not any(tuple(sorted([i, j])) == connection_key for i, j, _ in breakpoint_connections):
+                                breakpoint_connections.append((path_i_idx, path_j_idx, connection_point))
     
-    # If we couldn't build a connection graph, try a different approach
+    # If we couldn't build a connection graph from breakpoints, try direct path-to-path connections
     if not connection_graph:
-        print(f"Could not build connection graph from junction points, trying direct path-to-path connections")
+        print("Could not build connection graph from breakpoints, trying direct path-to-path connections")
         
         # Create connections directly between paths that are close to each other
+        # Track connections to avoid duplicates
+        direct_connections = set()
+        
         for i, path_i in enumerate(sub_paths):
             if not path_i.points or len(path_i.points) < 2:
                 continue
@@ -1242,6 +1187,11 @@ def connect_using_junction_points(sub_paths: List[SubPath], junction_points: Lis
             # Find closest paths to connect to
             for j, path_j in enumerate(sub_paths):
                 if i == j or not path_j.points or len(path_j.points) < 2:
+                    continue
+                    
+                # Skip if we already have this connection
+                connection_key = tuple(sorted([i, j]))
+                if connection_key in direct_connections:
                     continue
                     
                 # Get endpoints of other path
@@ -1257,50 +1207,41 @@ def connect_using_junction_points(sub_paths: List[SubPath], junction_points: Lis
                 # Use a reasonable threshold for direct connections
                 direct_threshold = 2.0  # mm
                 
-                # Create connections for close endpoints
-                if dist_end_i_to_start_j < direct_threshold:
-                    # Create a virtual junction at the midpoint
-                    mid_x = (end_i.x + start_j.x) / 2
-                    mid_y = (end_i.y + start_j.y) / 2
-                    junction = ShapelyPoint(mid_x, mid_y)
-                    
-                    connection_graph[i].append((j, dist_end_i_to_start_j, junction))
-                    connection_graph[j].append((i, dist_end_i_to_start_j, junction))
-                    junction_connections.append((i, j, junction))
+                # Find the best connection between these two paths
+                best_dist = min(dist_end_i_to_start_j, dist_end_i_to_end_j, 
+                               dist_start_i_to_start_j, dist_start_i_to_end_j)
                 
-                if dist_end_i_to_end_j < direct_threshold:
-                    mid_x = (end_i.x + end_j.x) / 2
-                    mid_y = (end_i.y + end_j.y) / 2
-                    junction = ShapelyPoint(mid_x, mid_y)
+                if best_dist < direct_threshold:
+                    # Create a connection point at the midpoint of the best connection
+                    if best_dist == dist_end_i_to_start_j:
+                        mid_x = (end_i.x + start_j.x) / 2
+                        mid_y = (end_i.y + start_j.y) / 2
+                    elif best_dist == dist_end_i_to_end_j:
+                        mid_x = (end_i.x + end_j.x) / 2
+                        mid_y = (end_i.y + end_j.y) / 2
+                    elif best_dist == dist_start_i_to_start_j:
+                        mid_x = (start_i.x + start_j.x) / 2
+                        mid_y = (start_i.y + start_j.y) / 2
+                    else:  # dist_start_i_to_end_j
+                        mid_x = (start_i.x + end_j.x) / 2
+                        mid_y = (start_i.y + end_j.y) / 2
                     
-                    connection_graph[i].append((j, dist_end_i_to_end_j, junction))
-                    connection_graph[j].append((i, dist_end_i_to_end_j, junction))
-                    junction_connections.append((i, j, junction))
-                
-                if dist_start_i_to_start_j < direct_threshold:
-                    mid_x = (start_i.x + start_j.x) / 2
-                    mid_y = (start_i.y + start_j.y) / 2
-                    junction = ShapelyPoint(mid_x, mid_y)
+                    connection_point = ShapelyPoint(mid_x, mid_y)
                     
-                    connection_graph[i].append((j, dist_start_i_to_start_j, junction))
-                    connection_graph[j].append((i, dist_start_i_to_start_j, junction))
-                    junction_connections.append((i, j, junction))
-                
-                if dist_start_i_to_end_j < direct_threshold:
-                    mid_x = (start_i.x + end_j.x) / 2
-                    mid_y = (start_i.y + end_j.y) / 2
-                    junction = ShapelyPoint(mid_x, mid_y)
+                    # Add bidirectional connections
+                    connection_graph[i].append((j, best_dist, connection_point))
+                    connection_graph[j].append((i, best_dist, connection_point))
                     
-                    connection_graph[i].append((j, dist_start_i_to_end_j, junction))
-                    connection_graph[j].append((i, dist_start_i_to_end_j, junction))
-                    junction_connections.append((i, j, junction))
-        
-        # If still no connections, fall back to distance-based
-        if not connection_graph:
-            print("Could not build any connection graph, falling back to distance-based connection")
-            return connect_using_distance(sub_paths)
+                    # Add to breakpoint connections and track this connection
+                    breakpoint_connections.append((i, j, connection_point))
+                    direct_connections.add(connection_key)
     
-    print(f"Created {len(junction_connections)} junction-based connections")
+    # If still no connections, fall back to distance-based
+    if not connection_graph:
+        print("Could not build any connection graph, falling back to distance-based connection")
+        return connect_using_distance(sub_paths)
+    
+    print(f"Created {len(breakpoint_connections)} breakpoint-based connections from {len(all_breakpoints)} breakpoints")
     
     # Start with the first sub-path
     visited = set()
@@ -1314,12 +1255,12 @@ def connect_using_junction_points(sub_paths: List[SubPath], junction_points: Lis
         best_next_idx = -1
         min_cost = float('inf')
         reverse_needed = False
-        best_junction = None
+        best_connection_point = None
         
         current_end_point = global_path[-1]
         
         # Check all neighbors in the connection graph
-        for neighbor_idx, cost, junction in connection_graph.get(current_path_idx, []):
+        for neighbor_idx, cost, connection_point in connection_graph.get(current_path_idx, []):
             if neighbor_idx in visited:
                 continue
                 
@@ -1329,42 +1270,42 @@ def connect_using_junction_points(sub_paths: List[SubPath], junction_points: Lis
             dist_to_start = current_end_point.distance(neighbor_path.points[0])
             dist_to_end = current_end_point.distance(neighbor_path.points[-1])
             
-            # Apply a bonus for junction-based connections
-            junction_bonus = 5.0  # Significant bonus to prefer junction connections
+            # Apply a bonus for breakpoint-based connections
+            breakpoint_bonus = 5.0  # Significant bonus to prefer breakpoint connections
             
-            # Calculate effective distances with junction bonus
-            effective_dist_to_start = dist_to_start - junction_bonus
-            effective_dist_to_end = dist_to_end - junction_bonus
+            # Calculate effective distances with breakpoint bonus
+            effective_dist_to_start = dist_to_start - breakpoint_bonus
+            effective_dist_to_end = dist_to_end - breakpoint_bonus
             
             if effective_dist_to_start < min_cost:
                 min_cost = effective_dist_to_start
                 best_next_idx = neighbor_idx
                 reverse_needed = False
-                best_junction = junction
+                best_connection_point = connection_point
                 
             if effective_dist_to_end < min_cost:
                 min_cost = effective_dist_to_end
                 best_next_idx = neighbor_idx
                 reverse_needed = True
-                best_junction = junction
+                best_connection_point = connection_point
         
         # If we found a connected path, add it
         if best_next_idx != -1:
             next_path = sub_paths[best_next_idx]
             points_to_add = next_path.points
             
-            # Route through the junction point
-            if best_junction and best_junction.distance(global_path[-1]) > POINT_EQUALITY_TOLERANCE:
-                global_path.append(best_junction)
+            # Route through the connection point
+            if best_connection_point and best_connection_point.distance(global_path[-1]) > POINT_EQUALITY_TOLERANCE:
+                global_path.append(best_connection_point)
             
             if reverse_needed:
                 # Add reversed points, skip the duplicate endpoint if needed
-                if best_junction and best_junction.distance(points_to_add[-1]) > POINT_EQUALITY_TOLERANCE:
+                if best_connection_point and best_connection_point.distance(points_to_add[-1]) > POINT_EQUALITY_TOLERANCE:
                     global_path.append(points_to_add[-1])
                 global_path.extend(reversed(points_to_add[:-1]))
             else:
                 # Add points, skip the duplicate start point if needed
-                if best_junction and best_junction.distance(points_to_add[0]) > POINT_EQUALITY_TOLERANCE:
+                if best_connection_point and best_connection_point.distance(points_to_add[0]) > POINT_EQUALITY_TOLERANCE:
                     global_path.append(points_to_add[0])
                 global_path.extend(points_to_add[1:])
                 
@@ -1753,7 +1694,6 @@ if __name__ == '__main__':
     stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
     #stl_file_path = os.path.join("models", "wrench.stl")
 
@@ -1910,11 +1850,11 @@ if __name__ == '__main__':
     # The sub-paths from rasterization should ideally form a connected graph
     print("\n--- Connecting Sub-paths ---")
     
-    # Debug check for junction points
-    if hasattr(sub_paths, 'junction_points'):
-        print(f"DEBUG: Main function - sub_paths has {len(sub_paths.junction_points)} junction points")
+    # Debug check for breakpoints
+    if hasattr(sub_paths, 'skeleton_data') and 'all_breakpoints' in sub_paths.skeleton_data:
+        print(f"DEBUG: Main function - found {len(sub_paths.skeleton_data['all_breakpoints'])} breakpoints")
     else:
-        print("DEBUG: Main function - sub_paths does NOT have junction_points attribute")
+        print("DEBUG: Main function - no breakpoints found in skeleton data")
     
     # Extract the actual sub_paths from the wrapper object if needed
     sub_paths_list = sub_paths.paths if hasattr(sub_paths, 'paths') else sub_paths
