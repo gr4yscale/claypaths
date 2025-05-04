@@ -955,21 +955,6 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
             if not found_next:
                 break
     
-    # Add any remaining unvisited contours using distance-based approach
-    remaining_contours = []
-    for level_idx, contours in contours_by_level.items():
-        for contour in contours:
-            if contour not in visited_contours and contour in contour_to_subpath:
-                remaining_contours.append(sub_paths[contour_to_subpath[contour]])
-    
-    if remaining_contours:
-        print(f"Adding {len(remaining_contours)} remaining contours using distance-based approach")
-        remaining_path = connect_using_distance(remaining_contours, global_path[-1] if global_path else None)
-        if global_path and remaining_path:
-            global_path.extend(remaining_path[1:])  # Skip first point to avoid duplication
-        elif remaining_path:
-            global_path.extend(remaining_path)
-    
     return global_path
 
 def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[ShapelyPoint]:
