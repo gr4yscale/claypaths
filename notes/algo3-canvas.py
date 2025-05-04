@@ -1382,30 +1382,24 @@ if __name__ == '__main__':
 
 
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
-    #kstl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+    stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
+    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
+
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
-    stl_file_path = os.path.join("models", "wrench.stl")
-    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
-    #stl_file_path = os.path.join("models", "u-shape.stl")
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
+    #stl_file_path = os.path.join("models", "wrench.stl")
+
     #stl_file_path = os.path.join("models", "t-shape.stl")
+    #stl_file_path = os.path.join("models", "u-shape.stl")
+
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
 
     #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
     #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
     #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
-
-
-
-    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
-    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-
-    #stl_file_path = os.path.join("models", "t-shape.stl")
-    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-
-    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
-
 
 
     # testing (stlparts)
