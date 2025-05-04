@@ -399,6 +399,10 @@ def re_level_contours(offset_results: List[List[Contour]], initial_outer: List[C
 # 4. (Removed) Algorithm 2: Finding breakpoints (Geometric approach)
 #-----------------------------------------------------------------------------
 
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from functools import partial
+
 def create_sub_paths(
     leveled_contours: List[List[Contour]],
     line_spacing: float,
@@ -407,6 +411,8 @@ def create_sub_paths(
     """
     Creates sub-paths by finding optimal breakpoints between contours.
     Identifies breakpoints in each contour that will be used to connect one contour to another.
+    Uses a spatial index to speed up finding nearby contours.
+    Uses parallel processing for better performance.
     
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
@@ -433,9 +439,14 @@ def create_sub_paths(
     # Get the breakpoint period from config
     config = get_config()
     n_layers_period = config.get('breakpoint_period', 5)  # Default to 5 if not specified
+    max_breakpoint_distance = config.get('max_breakpoint_distance', 2.0)  # Maximum distance to consider
+    spatial_index_buffer = config.get('spatial_index_buffer', 1.5)  # Buffer multiplier for spatial index
     
     # Find breakpoints between adjacent contour levels
     all_breakpoints = []
+    
+    # Prepare a distance cache to avoid recalculating distances
+    distance_cache = {}
     
     # Process each level (except the last one)
     for level_idx in range(len(contours_by_level) - 1):
@@ -448,27 +459,130 @@ def create_sub_paths(
             
         print(f"Finding breakpoints between level {level_idx} and {level_idx + 1}")
         
-        # Process each contour in the current level
-        for current_contour in current_level_contours:
-            # Find candidate neighboring contours in the next level
-            for next_contour in next_level_contours:
-                # Find breakpoints between these two contours
+        # Create spatial index for next level contours to speed up proximity queries
+        next_level_linestrings = [c._line for c in next_level_contours if c._line and not c._line.is_empty]
+        if not next_level_linestrings:
+            continue
+            
+        # Build spatial index
+        spatial_index = STRtree(next_level_linestrings)
+        
+        # Pre-filter current contours that are too far from any next level contour
+        # Create a union of all next level contours with a buffer
+        next_level_union = None
+        try:
+            from shapely.ops import unary_union
+            buffered_next_level = [ls.buffer(max_breakpoint_distance * spatial_index_buffer) 
+                                  for ls in next_level_linestrings]
+            next_level_union = unary_union(buffered_next_level)
+        except Exception as e:
+            print(f"Warning: Could not create union of next level contours: {e}")
+        
+        # Filter current contours that intersect with the next level union
+        filtered_current_contours = []
+        if next_level_union:
+            filtered_current_contours = [c for c in current_level_contours 
+                                        if c._line and not c._line.is_empty and c._line.intersects(next_level_union)]
+        else:
+            filtered_current_contours = current_level_contours
+            
+        print(f"Filtered from {len(current_level_contours)} to {len(filtered_current_contours)} current contours")
+        
+        # Prepare contour pairs for parallel processing
+        contour_pairs = []
+        for current_contour in filtered_current_contours:
+            if not current_contour._line or current_contour._line.is_empty:
+                continue
+                
+            # Create a buffer around the current contour to find potential matches
+            search_buffer = current_contour._line.buffer(max_breakpoint_distance * spatial_index_buffer)
+            
+            # Query the spatial index to find nearby contours
+            potential_matches_idx = spatial_index.query(search_buffer)
+            
+            # Add valid pairs to the processing list
+            for idx in potential_matches_idx:
+                next_contour = next_level_contours[idx]
+                if next_contour._line and not next_contour._line.is_empty:
+                    # Quick distance check before adding to processing list
+                    pair_key = (id(current_contour), id(next_contour))
+                    if pair_key not in distance_cache:
+                        distance_cache[pair_key] = current_contour._line.distance(next_contour._line)
+                    
+                    if distance_cache[pair_key] <= max_breakpoint_distance:
+                        contour_pairs.append((current_contour, next_contour))
+        
+        print(f"Processing {len(contour_pairs)} contour pairs")
+        
+        # Process contour pairs in parallel if there are enough pairs
+        level_breakpoints = []
+        if len(contour_pairs) > 1:  # Only use parallel processing if there are enough pairs
+            try:
+                # Use ThreadPoolExecutor for I/O bound tasks or when using Shapely objects
+                # that might not be picklable for ProcessPoolExecutor
+                with ThreadPoolExecutor(max_workers=min(8, multiprocessing.cpu_count())) as executor:
+                    # Create a partial function with fixed parameters
+                    find_breakpoints_partial = partial(
+                        process_contour_pair,
+                        line_spacing=line_spacing,
+                        n_layers_period=n_layers_period,
+                        max_breakpoint_distance=max_breakpoint_distance
+                    )
+                    
+                    # Process all pairs in parallel
+                    results = list(executor.map(find_breakpoints_partial, contour_pairs))
+                    
+                    # Collect all breakpoints
+                    for result in results:
+                        if result:  # result is a list of breakpoints for one contour pair
+                            level_breakpoints.extend(result)
+            except Exception as e:
+                print(f"Warning: Parallel processing failed: {e}. Falling back to sequential processing.")
+                # Fall back to sequential processing
+                for current_contour, next_contour in contour_pairs:
+                    breakpoints = find_breakpoints_between_contours(
+                        current_contour, 
+                        next_contour, 
+                        line_spacing,
+                        n_layers_period,
+                        max_breakpoint_distance
+                    )
+                    if breakpoints:
+                        level_breakpoints.extend(breakpoints)
+        else:
+            # Sequential processing for small number of pairs
+            for current_contour, next_contour in contour_pairs:
                 breakpoints = find_breakpoints_between_contours(
                     current_contour, 
                     next_contour, 
                     line_spacing,
-                    n_layers_period
+                    n_layers_period,
+                    max_breakpoint_distance
                 )
-                
                 if breakpoints:
-                    # Store breakpoints in the contour object
-                    current_contour.breakpoints.extend(breakpoints)
-                    all_breakpoints.extend(breakpoints)
-                    
-                    # Create connecting segments between breakpoints
-                    for p1, p2, p1_proj, p2_proj in breakpoints:
-                        current_contour.connecting_segments.append(Segment(p1, p1_proj))
-                        current_contour.connecting_segments.append(Segment(p2, p2_proj))
+                    level_breakpoints.extend(breakpoints)
+        
+        # Assign breakpoints to contours and create connecting segments
+        for bp in level_breakpoints:
+            p1, p2, p1_proj, p2_proj = bp
+            
+            # Find which contour this breakpoint belongs to
+            for current_contour in filtered_current_contours:
+                # Check if p1 or p2 is on this contour
+                on_contour = False
+                for point in current_contour.points:
+                    if point.distance(p1) < POINT_EQUALITY_TOLERANCE or point.distance(p2) < POINT_EQUALITY_TOLERANCE:
+                        on_contour = True
+                        break
+                
+                if on_contour:
+                    current_contour.breakpoints.append(bp)
+                    current_contour.connecting_segments.append(Segment(p1, p1_proj))
+                    current_contour.connecting_segments.append(Segment(p2, p2_proj))
+                    break
+        
+        # Add level breakpoints to all breakpoints
+        all_breakpoints.extend(level_breakpoints)
     
     print(f"Found {len(all_breakpoints)} breakpoints across all contours")
     
@@ -511,20 +625,46 @@ def create_sub_paths(
         }
     )
 
+def process_contour_pair(pair, line_spacing, n_layers_period, max_breakpoint_distance):
+    """
+    Process a pair of contours to find breakpoints between them.
+    This function is designed to be used with parallel processing.
+    
+    Args:
+        pair: A tuple of (current_contour, next_contour)
+        line_spacing: The spacing between contours
+        n_layers_period: How often to place breakpoints
+        max_breakpoint_distance: Maximum distance to consider for breakpoints
+        
+    Returns:
+        List of breakpoint tuples (p1, p2, p1_proj, p2_proj)
+    """
+    current_contour, next_contour = pair
+    return find_breakpoints_between_contours(
+        current_contour, 
+        next_contour, 
+        line_spacing, 
+        n_layers_period,
+        max_breakpoint_distance
+    )
+
 def find_breakpoints_between_contours(
     current_contour: Contour,
     next_contour: Contour,
     line_spacing: float,
-    n_layers_period: int
+    n_layers_period: int,
+    max_breakpoint_distance: float = None
 ) -> List[Tuple[ShapelyPoint, ShapelyPoint, ShapelyPoint, ShapelyPoint]]:
     """
     Finds breakpoints between two contours.
+    Uses Shapely's distance calculations for efficiency.
     
     Args:
         current_contour: The current contour
         next_contour: The neighboring contour
         line_spacing: The spacing between contours
         n_layers_period: How often to place breakpoints
+        max_breakpoint_distance: Maximum distance to consider for breakpoints
         
     Returns:
         List of breakpoint tuples (p1, p2, p1_proj, p2_proj)
@@ -537,15 +677,39 @@ def find_breakpoints_between_contours(
     if not next_contour.points or len(next_contour.points) < 2:
         return breakpoints
     
+    # Skip if either LineString is invalid
+    if not current_contour._line or current_contour._line.is_empty:
+        return breakpoints
+    if not next_contour._line or next_contour._line.is_empty:
+        return breakpoints
+    
+    # Check if contours are close enough to consider breakpoints
+    min_distance = current_contour._line.distance(next_contour._line)
+    
+    if max_breakpoint_distance is None:
+        config = get_config()
+        max_breakpoint_distance = config.get('max_breakpoint_distance', 2.0)
+    
+    if min_distance > max_breakpoint_distance:
+        return breakpoints  # Contours are too far apart
+    
     # Get the total length of the current contour
     total_length = current_contour.length()
     
     # Calculate how many breakpoints to create based on contour length and n_layers_period
     # We want approximately one breakpoint every (line_spacing * n_layers_period) distance
     target_spacing = line_spacing * n_layers_period
-    num_breakpoints = max(1, int(total_length / target_spacing))
     
-    # For each breakpoint position
+    # Adaptive number of breakpoints based on contour length and proximity
+    # Fewer breakpoints for distant contours, more for close ones
+    proximity_factor = 1.0 - (min_distance / max_breakpoint_distance)
+    adjusted_num_breakpoints = max(1, int((total_length / target_spacing) * (0.5 + proximity_factor)))
+    num_breakpoints = min(adjusted_num_breakpoints, 10)  # Cap at 10 breakpoints per contour pair
+    
+    # For each breakpoint position - use vectorized operations where possible
+    points_at_distances = []
+    
+    # Pre-calculate all points at evenly spaced distances
     for i in range(num_breakpoints):
         # Calculate the position along the contour for p1
         p1_distance = (i / num_breakpoints) * total_length
@@ -567,19 +731,52 @@ def find_breakpoints_between_contours(
         if p2 is None or p2_segment is None:
             continue
             
-        # Find the closest segments on the next contour
-        p1_proj_segment, p1_dist, _ = find_closest_segment_to_point(p1, next_contour)
-        p2_proj_segment, p2_dist, _ = find_closest_segment_to_point(p2, next_contour)
-        
-        if p1_proj_segment is None or p2_proj_segment is None:
-            continue
+        points_at_distances.append((p1, p2, p1_segment, p2_segment))
+    
+    # Skip if no valid points were found
+    if not points_at_distances:
+        return breakpoints
+    
+    # Create a list of all points to find projections for
+    all_points = []
+    for p1, p2, _, _ in points_at_distances:
+        all_points.append(p1)
+        all_points.append(p2)
+    
+    # Find the closest segments for all points at once using a spatial index
+    # This is more efficient than finding them one by one
+    next_contour_segments = next_contour.get_segments()
+    segment_linestrings = [seg._line for seg in next_contour_segments if seg._line and not seg._line.is_empty]
+    
+    if not segment_linestrings:
+        return breakpoints
+    
+    # Create a spatial index for the segments
+    segment_index = STRtree(segment_linestrings)
+    
+    # Find projections for all points
+    point_to_projection = {}
+    for point in all_points:
+        # Find the closest segment using the spatial index
+        nearest_idx = segment_index.nearest(point)
+        if nearest_idx is not None:
+            nearest_segment = next_contour_segments[nearest_idx]
+            # Project the point onto the segment
+            projected_point = nearest_segment.point_projection(point)
+            point_to_projection[point] = projected_point
+    
+    # Create breakpoints using the projections
+    for p1, p2, _, _ in points_at_distances:
+        if p1 in point_to_projection and p2 in point_to_projection:
+            p1_proj = point_to_projection[p1]
+            p2_proj = point_to_projection[p2]
             
-        # Project p1 and p2 onto the next contour
-        p1_proj = p1_proj_segment.point_projection(p1)
-        p2_proj = p2_proj_segment.point_projection(p2)
-        
-        # Add the breakpoint
-        breakpoints.append((p1, p2, p1_proj, p2_proj))
+            # Check if the projections are valid
+            if p1_proj and p2_proj:
+                # Check if the distance is within the maximum allowed distance
+                if p1.distance(p1_proj) <= max_breakpoint_distance and p2.distance(p2_proj) <= max_breakpoint_distance:
+                    # Add the breakpoint
+                    breakpoints.append((p1, p2, p1_proj, p2_proj))
     
     return breakpoints
 
