@@ -152,8 +152,6 @@ class Contour:
 
 class SubPath:
     """Represents an open path using Shapely Points."""
-    skeleton_data = None  # Class attribute to store skeleton data for visualization
-    
     def __init__(self, points: List[ShapelyPoint]):
         self.points = points
 
@@ -406,7 +404,6 @@ from functools import partial
 def create_sub_paths(
     leveled_contours: List[List[Contour]],
     line_spacing: float,
-    resolution: float = 0.1 # mm per pixel
 ) -> List[SubPath]:
     """
     Creates sub-paths by finding optimal breakpoints between contours.
@@ -417,7 +414,6 @@ def create_sub_paths(
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
-        resolution: The size of each pixel in millimeters for rasterization.
 
     Returns:
         A list of SubPath objects representing the connected contour segments.
@@ -600,30 +596,12 @@ def create_sub_paths(
     
     print(f"Created {len(sub_paths)} sub-paths from contours and connections")
     
-    # Create a wrapper object to hold both the sub_paths and skeleton data
-    class SubPathsWithSkeletonData:
-        def __init__(self, paths, skeleton_data):
-            self.paths = paths
-            self.skeleton_data = skeleton_data
-            self.junction_points = []
-    
-        def __len__(self):
-            return len(self.paths)
-    
-        def __getitem__(self, idx):
-            return self.paths[idx]
-    
-        def __iter__(self):
-            return iter(self.paths)
-    
-    # Return the wrapper object with sub_paths and skeleton data including breakpoints
-    return SubPathsWithSkeletonData(
-        sub_paths,
-        {
-            'contours_by_level': contours_by_level,
-            'all_breakpoints': all_breakpoints
-        }
-    )
+    # Return the sub_paths along with the contours and breakpoints
+    return {
+        'paths': sub_paths,
+        'contours_by_level': contours_by_level,
+        'all_breakpoints': all_breakpoints
+    }
 
 def process_contour_pair(pair, line_spacing, n_layers_period, max_breakpoint_distance):
     """
@@ -785,59 +763,64 @@ def find_breakpoints_between_contours(
 # 6. Generating continuous path (Connecting Sub-paths) - Linear Scan Method
 #-----------------------------------------------------------------------------
 
-def connect_subpaths_to_breakpoints(sub_paths: List[SubPath]) -> Tuple[List[SubPath], Dict]:
+def connect_subpaths_to_breakpoints(sub_paths_data: Dict) -> Tuple[List[SubPath], Dict]:
     """
     First step of the connection process: Connect subpaths to their breakpoints.
     This prepares the data for the final global path creation.
+    Uses caching and early filtering for better performance.
 
     Args:
-        sub_paths: A list of SubPath objects or a SubPathsWithSkeletonData object.
+        sub_paths_data: A dictionary containing paths, contours_by_level, and all_breakpoints.
 
     Returns:
         A tuple containing:
         - List of processed SubPath objects with breakpoint connections
         - Dictionary with connection metadata for the global path creation
     """
-    if not sub_paths:
+    # Enable debug visualization if configured
+    config = get_config()
+    debug_visualization = config.get('debug_connect_subpaths', False)
+    if not sub_paths_data:
         return [], {}
 
-    # Check if we have skeleton data available
-    skeleton_data = None
-    
-    if hasattr(sub_paths, 'skeleton_data'):
-        skeleton_data = sub_paths.skeleton_data
-        sub_paths_list = sub_paths.paths
-        
-        # Store skeleton data in the SubPath class for visualization
-        SubPath.skeleton_data = skeleton_data
-    else:
-        sub_paths_list = sub_paths
+    # Extract data from the dictionary
+    sub_paths_list = sub_paths_data.get('paths', [])
+    all_breakpoints = sub_paths_data.get('all_breakpoints', [])
+    contours_by_level = sub_paths_data.get('contours_by_level', {})
+
+    # Quick check if we have enough data to proceed
+    if not all_breakpoints or not contours_by_level:
+        # Filter out empty paths and return early
+        remaining_sub_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
+        print("No valid contour or breakpoint data available for connection")
+        return remaining_sub_paths, {}
 
     # Filter out empty paths
     remaining_sub_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
     if not remaining_sub_paths:
         return [], {}
-
-    # Check for breakpoints in the skeleton data
-    all_breakpoints = []
-    connection_metadata = {}
     
-    if skeleton_data and 'all_breakpoints' in skeleton_data:
-        all_breakpoints = skeleton_data.get('all_breakpoints', [])
-        print(f"Found {len(all_breakpoints)} breakpoints in skeleton data")
-        
-        if all_breakpoints:
-            contours_by_level = skeleton_data.get('contours_by_level', {})
-            if contours_by_level:
-                print("Processing breakpoints for path connection")
-                processed_paths, connection_metadata = process_breakpoint_connections(
-                    remaining_sub_paths, 
-                    all_breakpoints, 
-                    contours_by_level
-                )
-                return processed_paths, connection_metadata
+    print(f"Found {len(all_breakpoints)} breakpoints in skeleton data")
+    
+    if all_breakpoints and contours_by_level:
+        print("Processing breakpoints for path connection")
+        processed_paths, connection_metadata = process_breakpoint_connections(
+            remaining_sub_paths, 
+            all_breakpoints, 
+            contours_by_level
+        )
+        # Debug visualization if enabled
+        if debug_visualization:
+            visualize_connect_subpaths_debug(processed_paths, connection_metadata, "With Breakpoint Connections")
+            
+        return processed_paths, connection_metadata
     
     print("No breakpoints available for connection")
+    
+    # Debug visualization if enabled
+    if debug_visualization:
+        visualize_connect_subpaths_debug(remaining_sub_paths, {}, "No Breakpoints Available")
+        
     return remaining_sub_paths, {}
 
 def connect_all_subpaths_to_create_global_path(processed_paths: List[SubPath], connection_metadata: Dict) -> List[ShapelyPoint]:
@@ -881,6 +864,7 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
 def process_breakpoint_connections(sub_paths: List[SubPath], all_breakpoints: list, contours_by_level: dict) -> Tuple[List[SubPath], Dict]:
     """
     Processes subpaths and their breakpoint connections to prepare for global path creation.
+    Uses spatial indexing and caching for better performance.
     
     Args:
         sub_paths: List of SubPath objects
@@ -898,96 +882,146 @@ def process_breakpoint_connections(sub_paths: List[SubPath], all_breakpoints: li
         
     print(f"Processing {len(all_breakpoints)} breakpoints for connections")
     
-    # Step 1: Create a map of contours to their sub-paths
+    # Step 1: Create a map of contours to their sub-paths using a more efficient approach
     contour_to_subpath = {}
+    
+    # Create a dictionary of subpath endpoints for faster lookup
+    subpath_endpoints = {}
     for i, sub_path in enumerate(sub_paths):
         # Skip connecting segments (they're handled separately)
         if len(sub_path.points) < 3:  # Connecting segments typically have just 2 points
             continue
-            
-        # Find which contour this sub-path belongs to
-        for level_idx, contours in contours_by_level.items():
-            for contour in contours:
-                # Check if this sub-path matches this contour
-                if len(sub_path.points) == len(contour.points):
-                    # Check first and last points to confirm match
-                    if (sub_path.points[0].distance(contour.points[0]) < POINT_EQUALITY_TOLERANCE and
-                        sub_path.points[-1].distance(contour.points[-1]) < POINT_EQUALITY_TOLERANCE):
-                        contour_to_subpath[contour] = i
-                        break
-    
-    # Step 2: Create a map of breakpoints to their connecting segments
-    breakpoint_connections = {}
-    connecting_segments = []
-    for i, sub_path in enumerate(sub_paths):
-        if len(sub_path.points) == 2:  # This is a connecting segment
-            connecting_segments.append((i, sub_path))
-    
-    # Map breakpoints to their connecting segments
-    for bp_idx, bp in enumerate(all_breakpoints):
-        p1, p2, p1_proj, p2_proj = bp
         
-        # Find connecting segments for this breakpoint
-        for seg_idx, segment in connecting_segments:
-            seg_p1, seg_p2 = segment.points
-            
-            # Check if this segment connects points from this breakpoint
-            if ((seg_p1.distance(p1) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p1_proj) < POINT_EQUALITY_TOLERANCE) or
-                (seg_p1.distance(p1_proj) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p1) < POINT_EQUALITY_TOLERANCE) or
-                (seg_p1.distance(p2) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p2_proj) < POINT_EQUALITY_TOLERANCE) or
-                (seg_p1.distance(p2_proj) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p2) < POINT_EQUALITY_TOLERANCE)):
+        # Store the first and last point of each subpath for quick lookup
+        key = (len(sub_path.points), 
+               (sub_path.points[0].x, sub_path.points[0].y), 
+               (sub_path.points[-1].x, sub_path.points[-1].y))
+        subpath_endpoints[key] = i
+    
+    # Match contours to subpaths using the endpoint dictionary
+    for level_idx, contours in contours_by_level.items():
+        for contour in contours:
+            if len(contour.points) < 3:
+                continue
                 
-                if bp_idx not in breakpoint_connections:
-                    breakpoint_connections[bp_idx] = []
-                breakpoint_connections[bp_idx].append(seg_idx)
+            # Create a key for this contour
+            key = (len(contour.points), 
+                   (contour.points[0].x, contour.points[0].y), 
+                   (contour.points[-1].x, contour.points[-1].y))
+            
+            # Check if we have a matching subpath
+            if key in subpath_endpoints:
+                contour_to_subpath[contour] = subpath_endpoints[key]
     
-    # Step 3: Create connection metadata for each contour
-    contour_breakpoints = {}
+    # Step 2: Create a map of breakpoints to their connecting segments using spatial indexing
+    breakpoint_connections = {}
+    
+    # Identify connecting segments (those with only 2 points)
+    connecting_segments = [(i, sub_path) for i, sub_path in enumerate(sub_paths) if len(sub_path.points) == 2]
+    
+    # Create spatial index for segment endpoints
+    from collections import defaultdict
+    endpoint_to_segments = defaultdict(list)
+    
+    # Round coordinates to reduce floating point comparison issues
+    precision = int(-math.log10(POINT_EQUALITY_TOLERANCE))
+    
+    for seg_idx, segment in connecting_segments:
+        seg_p1, seg_p2 = segment.points
+        # Round coordinates to handle floating point precision
+        p1_key = (round(seg_p1.x, precision), round(seg_p1.y, precision))
+        p2_key = (round(seg_p2.x, precision), round(seg_p2.y, precision))
+        
+        endpoint_to_segments[p1_key].append((seg_idx, 0))  # 0 indicates first point
+        endpoint_to_segments[p2_key].append((seg_idx, 1))  # 1 indicates second point
+    
+    # Map breakpoints to their connecting segments using the spatial index
     for bp_idx, bp in enumerate(all_breakpoints):
         p1, p2, p1_proj, p2_proj = bp
         
-        # Find which contours this breakpoint connects
-        source_contour = None
-        target_contour = None
+        # Create rounded keys for each breakpoint point
+        p1_key = (round(p1.x, precision), round(p1.y, precision))
+        p2_key = (round(p2.x, precision), round(p2.y, precision))
+        p1_proj_key = (round(p1_proj.x, precision), round(p1_proj.y, precision))
+        p2_proj_key = (round(p2_proj.x, precision), round(p2_proj.y, precision))
+        
+        # Check all possible connections using the spatial index
+        connected_segments = set()
+        
+        # Check p1 to p1_proj connections
+        for p1_seg_idx, p1_point_idx in endpoint_to_segments.get(p1_key, []):
+            for p1_proj_seg_idx, p1_proj_point_idx in endpoint_to_segments.get(p1_proj_key, []):
+                if p1_seg_idx == p1_proj_seg_idx:
+                    connected_segments.add(p1_seg_idx)
+        
+        # Check p2 to p2_proj connections
+        for p2_seg_idx, p2_point_idx in endpoint_to_segments.get(p2_key, []):
+            for p2_proj_seg_idx, p2_proj_point_idx in endpoint_to_segments.get(p2_proj_key, []):
+                if p2_seg_idx == p2_proj_seg_idx:
+                    connected_segments.add(p2_seg_idx)
+        
+        # Store the connections
+        if connected_segments:
+            breakpoint_connections[bp_idx] = list(connected_segments)
+    
+    # Step 3: Create connection metadata for each contour using a more efficient approach
+    contour_breakpoints = {}
+    
+    # Create a spatial index for contour points
+    contour_point_index = {}
+    for level_idx, contours in contours_by_level.items():
+        for contour in contours:
+            for i, point in enumerate(contour.points):
+                point_key = (round(point.x, precision), round(point.y, precision))
+                if point_key not in contour_point_index:
+                    contour_point_index[point_key] = []
+                contour_point_index[point_key].append((contour, i))
+    
+    # Process each breakpoint to find source and target contours
+    for bp_idx, bp in enumerate(all_breakpoints):
+        p1, p2, p1_proj, p2_proj = bp
+        
+        # Create rounded keys for breakpoint points
+        p1_key = (round(p1.x, precision), round(p1.y, precision))
+        p2_key = (round(p2.x, precision), round(p2.y, precision))
+        p1_proj_key = (round(p1_proj.x, precision), round(p1_proj.y, precision))
+        p2_proj_key = (round(p2_proj.x, precision), round(p2_proj.y, precision))
         
         # Find source contour (contains p1/p2)
-        for level_idx, contours in contours_by_level.items():
-            for contour in contours:
-                for point in contour.points:
-                    if (point.distance(p1) < POINT_EQUALITY_TOLERANCE or 
-                        point.distance(p2) < POINT_EQUALITY_TOLERANCE):
-                        source_contour = contour
-                        break
-                if source_contour:
-                    break
-            if source_contour:
+        source_contour = None
+        position = -1
+        
+        # Check p1 first
+        for contour, idx in contour_point_index.get(p1_key, []):
+            source_contour = contour
+            position = idx
+            break
+            
+        # If not found, check p2
+        if not source_contour:
+            for contour, idx in contour_point_index.get(p2_key, []):
+                source_contour = contour
+                position = idx
                 break
-                
+        
         # Find target contour (contains p1_proj/p2_proj)
-        for level_idx, contours in contours_by_level.items():
-            for contour in contours:
-                for point in contour.points:
-                    if (point.distance(p1_proj) < POINT_EQUALITY_TOLERANCE or 
-                        point.distance(p2_proj) < POINT_EQUALITY_TOLERANCE):
-                        target_contour = contour
-                        break
-                if target_contour:
-                    break
-            if target_contour:
+        target_contour = None
+        
+        # Check p1_proj first
+        for contour, _ in contour_point_index.get(p1_proj_key, []):
+            target_contour = contour
+            break
+            
+        # If not found, check p2_proj
+        if not target_contour:
+            for contour, _ in contour_point_index.get(p2_proj_key, []):
+                target_contour = contour
                 break
         
         # Store the connection if both contours were found
         if source_contour and target_contour:
             if source_contour not in contour_breakpoints:
                 contour_breakpoints[source_contour] = []
-            
-            # Store the breakpoint index, target contour, and position info
-            # Find position along source contour for sorting later
-            position = -1
-            for i, point in enumerate(source_contour.points):
-                if point.distance(p1) < POINT_EQUALITY_TOLERANCE:
-                    position = i
-                    break
             
             contour_breakpoints[source_contour].append({
                 'bp_idx': bp_idx,
@@ -1452,6 +1486,148 @@ def visualize_final_toolpath(
         print(f"\nError during visualization: {e}")
 
 
+def visualize_connect_subpaths_debug(processed_paths: List[SubPath], connection_metadata: Dict, title_suffix: str = ""):
+    """
+    Debug visualization for the results of connect_subpaths_to_breakpoints.
+    Shows the processed subpaths and their connections to breakpoints.
+    
+    Args:
+        processed_paths: List of SubPath objects after processing
+        connection_metadata: Dictionary with connection information
+        title_suffix: Optional suffix for the plot title
+    """
+    print("\n--- Debug Visualization: connect_subpaths_to_breakpoints ---")
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib.patches import Patch
+        
+        plt.figure(figsize=(12, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')
+        
+        # Plot all subpaths with different colors
+        colors = plt.cm.tab20(np.linspace(0, 1, len(processed_paths)))
+        
+        # Create a legend dictionary to track unique path types
+        legend_elements = []
+        
+        # Plot each subpath
+        for i, subpath in enumerate(processed_paths):
+            if not subpath.points or len(subpath.points) < 2:
+                continue
+                
+            # Extract coordinates
+            x = [p.x for p in subpath.points]
+            y = [p.y for p in subpath.points]
+            
+            # Determine if this is a connecting segment (2 points) or a contour
+            if len(subpath.points) == 2:
+                # This is likely a connecting segment
+                ax.plot(x, y, '--', color=colors[i % len(colors)], linewidth=1.5, alpha=0.8)
+                
+                # Add to legend if not already there
+                if not any(item.get_label() == 'Connecting Segment' for item in legend_elements):
+                    legend_elements.append(Patch(facecolor='gray', edgecolor='black', alpha=0.5, label='Connecting Segment'))
+                
+                # Mark endpoints
+                ax.plot(x[0], y[0], 'o', color=colors[i % len(colors)], markersize=4)
+                ax.plot(x[1], y[1], 'o', color=colors[i % len(colors)], markersize=4)
+            else:
+                # This is a contour
+                ax.plot(x, y, '-', color=colors[i % len(colors)], linewidth=1.0)
+                
+                # Add to legend if not already there
+                if not any(item.get_label() == 'Contour' for item in legend_elements):
+                    legend_elements.append(Patch(facecolor='blue', edgecolor='black', alpha=0.5, label='Contour'))
+                
+                # Mark start point
+                ax.plot(x[0], y[0], 'o', color='green', markersize=5)
+                
+                # Add subpath index as text
+                mid_idx = len(x) // 2
+                ax.text(x[mid_idx], y[mid_idx], f'SP{i}', fontsize=8, ha='center', va='center',
+                       bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        
+        # If we have connection metadata, visualize the connections
+        if connection_metadata:
+            # Extract data from connection metadata
+            contour_to_subpath = connection_metadata.get('contour_to_subpath', {})
+            breakpoint_connections = connection_metadata.get('breakpoint_connections', {})
+            contour_breakpoints = connection_metadata.get('contour_breakpoints', {})
+            all_breakpoints = connection_metadata.get('all_breakpoints', [])
+            
+            # Plot breakpoints
+            if all_breakpoints:
+                for bp_idx, bp in enumerate(all_breakpoints):
+                    p1, p2, p1_proj, p2_proj = bp
+                    
+                    # Plot the breakpoint pairs
+                    ax.plot(p1.x, p1.y, 'ro', markersize=5)
+                    ax.plot(p2.x, p2.y, 'bo', markersize=5)
+                    
+                    # Plot the projected points
+                    ax.plot(p1_proj.x, p1_proj.y, 'go', markersize=5)
+                    ax.plot(p2_proj.x, p2_proj.y, 'mo', markersize=5)
+                    
+                    # Add breakpoint index as text
+                    ax.text((p1.x + p2.x)/2, (p1.y + p2.y)/2, f'BP{bp_idx}', fontsize=8, ha='center', va='center',
+                           bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+                    
+                    # Add to legend if not already there
+                    if not any(item.get_label() == 'Breakpoint P1' for item in legend_elements):
+                        legend_elements.append(Patch(facecolor='red', edgecolor='black', alpha=0.5, label='Breakpoint P1'))
+                    if not any(item.get_label() == 'Breakpoint P2' for item in legend_elements):
+                        legend_elements.append(Patch(facecolor='blue', edgecolor='black', alpha=0.5, label='Breakpoint P2'))
+                    if not any(item.get_label() == 'Projected Point' for item in legend_elements):
+                        legend_elements.append(Patch(facecolor='green', edgecolor='black', alpha=0.5, label='Projected Point'))
+            
+            # Visualize contour-to-subpath mapping
+            for contour, subpath_idx in contour_to_subpath.items():
+                if contour._line and not contour._line.is_empty:
+                    centroid = contour._line.centroid
+                    ax.text(centroid.x, centroid.y, f'C→SP{subpath_idx}', fontsize=8, ha='center', va='center',
+                           bbox=dict(facecolor='yellow', alpha=0.7, edgecolor='black', pad=1))
+            
+            # Visualize breakpoint connections
+            for bp_idx, segment_indices in breakpoint_connections.items():
+                if bp_idx < len(all_breakpoints):
+                    bp = all_breakpoints[bp_idx]
+                    p1, p2, p1_proj, p2_proj = bp
+                    
+                    # Draw connections
+                    ax.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'g--', linewidth=1.0, alpha=0.7)
+                    ax.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'm--', linewidth=1.0, alpha=0.7)
+                    
+                    # Add text showing which segments are connected
+                    mid_x1 = (p1.x + p1_proj.x) / 2
+                    mid_y1 = (p1.y + p1_proj.y) / 2
+                    mid_x2 = (p2.x + p2_proj.x) / 2
+                    mid_y2 = (p2.y + p2_proj.y) / 2
+                    
+                    seg_text = ', '.join([f'S{idx}' for idx in segment_indices])
+                    ax.text(mid_x1, mid_y1, f'BP{bp_idx}→{seg_text}', fontsize=7, ha='center', va='center',
+                           bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        
+        plt.title(f"Connect Subpaths to Breakpoints Debug {title_suffix}")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        
+        # Add the legend
+        if legend_elements:
+            plt.legend(handles=legend_elements, loc='best', fontsize='small')
+        
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.tight_layout()
+        plt.show()
+        
+    except ImportError:
+        print("\nInstall matplotlib to visualize the debug results: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during debug visualization: {e}")
+        import traceback
+        traceback.print_exc()
+
 def visualize_breakpoint_connections(connection_metadata: Dict, layer_to_process_idx: int):
     """
     Visualizes the breakpoint connections between contours.
@@ -1623,8 +1799,11 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
-    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+
     #stl_file_path = os.path.join("models", "wrench.stl")
+
+    stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
 
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
@@ -1634,7 +1813,6 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
 
     #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
-    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
     #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
 
 
@@ -1763,12 +1941,10 @@ if __name__ == '__main__':
 
     # --- 4/5. Create Sub-paths with Breakpoints ---
     print("\n--- Creating Sub-paths with Breakpoints ---")
-    raster_resolution = config.get('raster_resolution', 0.05) # Default if not in config
     n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
     sub_paths = create_sub_paths(
         leveled_contours,
         line_spacing,
-        resolution=raster_resolution
     )
     if not sub_paths:
          sys.exit("Failed to create sub-paths using rasterization.")
@@ -1779,8 +1955,8 @@ if __name__ == '__main__':
     print("\n--- Connecting Sub-paths to Breakpoints ---")
     
     # Debug check for breakpoints
-    if hasattr(sub_paths, 'skeleton_data') and 'all_breakpoints' in sub_paths.skeleton_data:
-        print(f"DEBUG: Main function - found {len(sub_paths.skeleton_data['all_breakpoints'])} breakpoints")
+    if sub_paths and 'all_breakpoints' in sub_paths:
+        print(f"DEBUG: Main function - found {len(sub_paths['all_breakpoints'])} breakpoints")
     else:
         print("DEBUG: Main function - no breakpoints found in data")
     
@@ -1817,13 +1993,13 @@ if __name__ == '__main__':
          )
          
     # --- 7b. Optional: Visualize Contours and Breakpoints ---
-    if config.get('visualize_breakpoints', True) and hasattr(sub_paths, 'skeleton_data') and sub_paths.skeleton_data:
+    if config.get('visualize_breakpoints', True) and sub_paths:
         try:
             import matplotlib.pyplot as plt
             
             # Unpack the data
-            contours_by_level = sub_paths.skeleton_data.get('contours_by_level', {})
-            all_breakpoints = sub_paths.skeleton_data.get('all_breakpoints', [])
+            contours_by_level = sub_paths.get('contours_by_level', {})
+            all_breakpoints = sub_paths.get('all_breakpoints', [])
             
             if contours_by_level:
                 # Visualize contours
