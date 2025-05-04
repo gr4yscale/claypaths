@@ -401,26 +401,22 @@ def create_sub_paths_via_rasterization(
     resolution: float = 0.1 # mm per pixel
 ) -> List[SubPath]:
     """
-    Creates sub-paths by finding breakpoints between contours using image processing.
+    Creates sub-paths by finding breakpoints between contours using a spatial index.
     
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
-        resolution: The size of each pixel in millimeters (for image-based processing).
+        resolution: The size of each pixel in millimeters (unused, kept for API compatibility).
 
     Returns:
         A list of SubPath objects representing the connected contour segments.
     """
-    if not cv2_available:
-        print("Image Processing: Skipping because OpenCV (cv2) or SciPy is not installed.")
-        return []
-
     all_contours = [c for level in leveled_contours for c in level if c.points and len(c.points) >= 2]
     if not all_contours:
-        print("Image Processing: No valid contours provided.")
+        print("Spatial Index: No valid contours provided.")
         return []
 
-    print(f"Image Processing: Starting with {len(all_contours)} contours.")
+    print(f"Spatial Index: Starting with {len(all_contours)} contours.")
     
     # Flatten contours by level for processing
     contours_by_level = {}
@@ -443,46 +439,79 @@ def create_sub_paths_via_rasterization(
             
         print(f"Finding breakpoints between level {current_level} and {next_level}")
         
+        # Create spatial index for next level contours
+        next_level_lines = [c._line for c in next_contours if c._line and not c._line.is_empty]
+        if not next_level_lines:
+            continue
+            
+        # Build spatial index for efficient nearest neighbor queries
+        spatial_index = STRtree(next_level_lines)
+        
         # For each contour in current level, find closest points to contours in next level
         for i, current_contour in enumerate(current_contours):
             current_line = current_contour._line
             if not current_line or current_line.is_empty:
                 continue
+            
+            # Sample points along the current contour for potential breakpoints
+            # This is more efficient than checking every point
+            num_samples = min(20, len(current_contour.points))  # Limit number of samples
+            sample_indices = np.linspace(0, len(current_contour.points)-1, num_samples, dtype=int)
+            
+            for sample_idx in sample_indices:
+                sample_point = current_contour.points[sample_idx]
                 
-            for j, next_contour in enumerate(next_contours):
-                next_line = next_contour._line
-                if not next_line or next_line.is_empty:
-                    continue
+                # Query the spatial index for nearest contours
+                nearest_lines = spatial_index.query(sample_point)
                 
-                # Find closest points between the two contours
-                # Use distance matrix approach for better performance
-                current_points = np.array([(p.x, p.y) for p in current_contour.points])
-                next_points = np.array([(p.x, p.y) for p in next_contour.points])
-                
-                # Calculate pairwise distances between all points
-                if len(current_points) > 0 and len(next_points) > 0:
-                    # Use vectorized operations for speed
-                    distances = np.sqrt(((current_points[:, np.newaxis, :] - next_points[np.newaxis, :, :]) ** 2).sum(axis=2))
+                for next_line in nearest_lines:
+                    # Find the index of the next contour by comparing geometries, not object identity
+                    next_contour_candidates = []
+                    for idx, c in enumerate(next_contours):
+                        if c._line and not c._line.is_empty:
+                            try:
+                                # Use a more robust comparison method
+                                if c._line.almost_equals(next_line, decimal=6):
+                                    next_contour_candidates.append((idx, c))
+                            except (TypeError, AttributeError):
+                                # If comparison fails, try a distance-based approach
+                                try:
+                                    if c._line.distance(next_line) < 1e-6:
+                                        next_contour_candidates.append((idx, c))
+                                except (TypeError, AttributeError):
+                                    # Skip this contour if all comparisons fail
+                                    pass
                     
-                    # Find minimum distance and corresponding indices
-                    min_dist_idx = np.unravel_index(np.argmin(distances), distances.shape)
-                    min_dist = distances[min_dist_idx]
+                    if not next_contour_candidates:
+                        continue
+                        
+                    # Use the first matching contour
+                    j, next_contour = next_contour_candidates[0]
+                    
+                    # Calculate distance to the nearest line
+                    dist = sample_point.distance(next_line)
                     
                     # Only create breakpoints if contours are close enough
-                    if min_dist < line_spacing * 1.5:
-                        current_idx, next_idx = min_dist_idx
+                    if dist < line_spacing * 1.5:
+                        # Find the closest point on the next contour
+                        next_point_coords = next_line.interpolate(next_line.project(sample_point))
+                        next_point = ShapelyPoint(next_point_coords.x, next_point_coords.y)
                         
-                        # Get the actual points
-                        p1 = current_contour.points[current_idx]
-                        p2 = next_contour.points[next_idx]
+                        # Find the index of the closest point in the next contour
+                        next_idx = min(range(len(next_contour.points)), 
+                                      key=lambda k: next_contour.points[k].distance(next_point))
                         
                         # Store breakpoint information
-                        all_breakpoints.append((current_level, i, current_idx, next_level, j, next_idx))
+                        all_breakpoints.append((current_level, i, sample_idx, next_level, j, next_idx))
                         
                         # Store breakpoint in contour objects for visualization
-                        current_contour.breakpoints.append((p1, p2, p1, p2))
+                        current_contour.breakpoints.append((sample_point, next_contour.points[next_idx], 
+                                                           sample_point, next_contour.points[next_idx]))
                         
                         print(f"  Found breakpoint: Level {current_level}[{i}] to Level {next_level}[{j}]")
+                        
+                        # Only create one breakpoint per sample point
+                        break
     
     # Create sub-paths from contours and breakpoints
     sub_paths = []
@@ -888,11 +917,11 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
 
 
-    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
     #stl_file_path = os.path.join("models", "wrench.stl")
-    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
