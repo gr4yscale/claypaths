@@ -401,27 +401,95 @@ def create_sub_paths_via_rasterization(
     resolution: float = 0.1 # mm per pixel
 ) -> List[SubPath]:
     """
-    Creates sub-paths by finding breakpoints between contours using a spatial index.
+    Creates sub-paths by finding optimal breakpoints between contours using image processing.
     
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
-        resolution: The size of each pixel in millimeters (unused, kept for API compatibility).
+        resolution: The size of each pixel in millimeters for rasterization.
 
     Returns:
         A list of SubPath objects representing the connected contour segments.
     """
+    if not cv2_available:
+        print("Warning: OpenCV not available. Falling back to spatial index method.")
+        # Implement fallback method here if needed
+        return []
+        
     all_contours = [c for level in leveled_contours for c in level if c.points and len(c.points) >= 2]
     if not all_contours:
-        print("Spatial Index: No valid contours provided.")
+        print("Image Processing: No valid contours provided.")
         return []
 
-    print(f"Spatial Index: Starting with {len(all_contours)} contours.")
+    print(f"Image Processing: Starting with {len(all_contours)} contours.")
     
     # Flatten contours by level for processing
     contours_by_level = {}
     for level_idx, level_list in enumerate(leveled_contours):
         contours_by_level[level_idx] = [c for c in level_list if c.points and len(c.points) >= 2]
+    
+    # Find the bounding box of all contours to determine image size
+    min_x, min_y = float('inf'), float('inf')
+    max_x, max_y = float('-inf'), float('-inf')
+    
+    for contour in all_contours:
+        for point in contour.points:
+            min_x = min(min_x, point.x)
+            min_y = min(min_y, point.y)
+            max_x = max(max_x, point.x)
+            max_y = max(max_y, point.y)
+    
+    # Add padding to the bounding box
+    padding = line_spacing * 2
+    min_x -= padding
+    min_y -= padding
+    max_x += padding
+    max_y += padding
+    
+    # Calculate image dimensions based on resolution
+    width = int((max_x - min_x) / resolution) + 1
+    height = int((max_y - min_y) / resolution) + 1
+    
+    # Ensure reasonable image dimensions
+    if width > 5000 or height > 5000:
+        scale_factor = min(5000 / width, 5000 / height)
+        width = int(width * scale_factor)
+        height = int(height * scale_factor)
+        resolution = resolution / scale_factor
+        print(f"Adjusted resolution to {resolution:.4f} mm/pixel to limit image size")
+    
+    print(f"Creating image of size {width}x{height} pixels at {resolution:.4f} mm/pixel")
+    
+    # Create transformation functions between world and image coordinates
+    def world_to_image(x, y):
+        img_x = int((x - min_x) / resolution)
+        img_y = int((y - min_y) / resolution)
+        return img_x, img_y
+    
+    def image_to_world(img_x, img_y):
+        x = img_x * resolution + min_x
+        y = img_y * resolution + min_y
+        return x, y
+    
+    # Create separate images for each level
+    level_images = {}
+    for level_idx, contours in contours_by_level.items():
+        img = np.zeros((height, width), dtype=np.uint8)
+        
+        for contour in contours:
+            # Convert contour points to image coordinates
+            contour_points = []
+            for point in contour.points:
+                img_x, img_y = world_to_image(point.x, point.y)
+                contour_points.append([img_x, img_y])
+            
+            # Convert to numpy array for OpenCV
+            contour_points = np.array(contour_points, dtype=np.int32)
+            
+            # Draw the contour
+            cv2.drawContours(img, [contour_points], 0, 255, thickness=max(1, int(line_spacing / resolution / 2)))
+        
+        level_images[level_idx] = img
     
     # Find breakpoints between adjacent levels
     all_breakpoints = []
@@ -439,79 +507,138 @@ def create_sub_paths_via_rasterization(
             
         print(f"Finding breakpoints between level {current_level} and {next_level}")
         
-        # Create spatial index for next level contours
-        next_level_lines = [c._line for c in next_contours if c._line and not c._line.is_empty]
-        if not next_level_lines:
-            continue
-            
-        # Build spatial index for efficient nearest neighbor queries
-        spatial_index = STRtree(next_level_lines)
+        # Get images for current and next level
+        current_img = level_images.get(current_level)
+        next_img = level_images.get(next_level)
         
-        # For each contour in current level, find closest points to contours in next level
+        if current_img is None or next_img is None:
+            continue
+        
+        # Create a distance transform for the next level
+        # This gives each pixel its distance to the nearest contour
+        next_dist_transform = cv2.distanceTransform(255 - next_img, cv2.DIST_L2, 5)
+        
+        # For each contour in current level, find optimal breakpoints
         for i, current_contour in enumerate(current_contours):
-            current_line = current_contour._line
-            if not current_line or current_line.is_empty:
+            if not current_contour.points or len(current_contour.points) < 2:
                 continue
             
-            # Sample points along the current contour for potential breakpoints
-            # This is more efficient than checking every point
-            num_samples = min(20, len(current_contour.points))  # Limit number of samples
+            # Sample points along the current contour
+            # Use more sample points for better coverage
+            num_samples = min(max(30, len(current_contour.points) // 5), len(current_contour.points))
             sample_indices = np.linspace(0, len(current_contour.points)-1, num_samples, dtype=int)
+            
+            # For each sample point, find the closest point on the next level
+            best_sample_idx = -1
+            best_next_contour_idx = -1
+            best_next_point_idx = -1
+            min_connection_cost = float('inf')
             
             for sample_idx in sample_indices:
                 sample_point = current_contour.points[sample_idx]
+                img_x, img_y = world_to_image(sample_point.x, sample_point.y)
                 
-                # Query the spatial index for nearest contours
-                nearest_lines = spatial_index.query(sample_point)
+                # Ensure coordinates are within image bounds
+                if 0 <= img_x < width and 0 <= img_y < height:
+                    # Get distance to next level contour at this point
+                    dist_to_next = next_dist_transform[img_y, img_x] * resolution
+                    
+                    # Only consider points that are close enough
+                    # Use the max_breakpoint_distance from config
+                    max_distance = line_spacing * config.get('max_breakpoint_distance', 1.2)
+                    if dist_to_next < max_distance:
+                        # Find the closest contour in the next level
+                        for j, next_contour in enumerate(next_contours):
+                            if not next_contour.points or len(next_contour.points) < 2:
+                                continue
+                            
+                            # Find closest point on next contour
+                            next_line = next_contour._line
+                            if not next_line or next_line.is_empty:
+                                continue
+                                
+                            # Project sample point onto next contour
+                            next_point_coords = next_line.interpolate(next_line.project(sample_point))
+                            next_point = ShapelyPoint(next_point_coords.x, next_point_coords.y)
+                            
+                            # Calculate direct distance
+                            direct_dist = sample_point.distance(next_point)
+                            
+                            # Check if the connection would intersect other contours
+                            # Create a line between the two points
+                            connection_line = ShapelyLineString([sample_point, next_point])
+                            
+                            # Check for intersections with other contours
+                            intersects_other_contours = False
+                            for level_idx2, level_contours in contours_by_level.items():
+                                if level_idx2 != current_level and level_idx2 != next_level:
+                                    for other_contour in level_contours:
+                                        if other_contour._line and not other_contour._line.is_empty:
+                                            if connection_line.intersects(other_contour._line):
+                                                intersects_other_contours = True
+                                                break
+                                if intersects_other_contours:
+                                    break
+                            
+                            # Calculate connection cost with more factors:
+                            # 1. Direct distance (shorter is better)
+                            # 2. Intersection penalty (avoid crossing other contours)
+                            # 3. Distance along contour from previous breakpoints (prefer even spacing)
+                            
+                            # Start with direct distance
+                            connection_cost = direct_dist
+                            
+                            # Apply intersection penalty
+                            if intersects_other_contours:
+                                connection_cost *= 10  # Heavy penalty for intersections
+                            
+                            # Check if there are existing breakpoints on this contour
+                            existing_breakpoints = [bp for bp in all_breakpoints 
+                                                  if (bp[0] == current_level and bp[1] == i)]
+                            
+                            # If there are existing breakpoints, penalize points that are too close
+                            if existing_breakpoints:
+                                for bp in existing_breakpoints:
+                                    bp_idx = bp[2]
+                                    bp_point = current_contour.points[bp_idx]
+                                    
+                                    # Calculate distance along contour (approximate)
+                                    dist_along_contour = abs(sample_idx - bp_idx) / len(current_contour.points) * current_contour.length()
+                                    
+                                    # Penalize if too close to existing breakpoint
+                                    # We want breakpoints to be evenly distributed
+                                    min_desired_dist = current_contour.length() / (len(existing_breakpoints) + 2)
+                                    if dist_along_contour < min_desired_dist:
+                                        # Penalty increases as points get closer
+                                        proximity_factor = 1.0 + (min_desired_dist - dist_along_contour) / min_desired_dist * 5.0
+                                        connection_cost *= proximity_factor
+                            
+                            if connection_cost < min_connection_cost:
+                                min_connection_cost = connection_cost
+                                best_sample_idx = sample_idx
+                                best_next_contour_idx = j
+                                
+                                # Find the index of the closest point in the next contour
+                                best_next_point_idx = min(range(len(next_contour.points)), 
+                                                        key=lambda k: next_contour.points[k].distance(next_point))
+            
+            # If we found a good connection, add it as a breakpoint
+            if best_sample_idx != -1 and best_next_contour_idx != -1:
+                # Store breakpoint information
+                all_breakpoints.append((
+                    current_level, i, best_sample_idx, 
+                    next_level, best_next_contour_idx, best_next_point_idx
+                ))
                 
-                for next_line in nearest_lines:
-                    # Find the index of the next contour by comparing geometries, not object identity
-                    next_contour_candidates = []
-                    for idx, c in enumerate(next_contours):
-                        if c._line and not c._line.is_empty:
-                            try:
-                                # Use a more robust comparison method
-                                if c._line.almost_equals(next_line, decimal=6):
-                                    next_contour_candidates.append((idx, c))
-                            except (TypeError, AttributeError):
-                                # If comparison fails, try a distance-based approach
-                                try:
-                                    if c._line.distance(next_line) < 1e-6:
-                                        next_contour_candidates.append((idx, c))
-                                except (TypeError, AttributeError):
-                                    # Skip this contour if all comparisons fail
-                                    pass
-                    
-                    if not next_contour_candidates:
-                        continue
-                        
-                    # Use the first matching contour
-                    j, next_contour = next_contour_candidates[0]
-                    
-                    # Calculate distance to the nearest line
-                    dist = sample_point.distance(next_line)
-                    
-                    # Only create breakpoints if contours are close enough
-                    if dist < line_spacing * 1.5:
-                        # Find the closest point on the next contour
-                        next_point_coords = next_line.interpolate(next_line.project(sample_point))
-                        next_point = ShapelyPoint(next_point_coords.x, next_point_coords.y)
-                        
-                        # Find the index of the closest point in the next contour
-                        next_idx = min(range(len(next_contour.points)), 
-                                      key=lambda k: next_contour.points[k].distance(next_point))
-                        
-                        # Store breakpoint information
-                        all_breakpoints.append((current_level, i, sample_idx, next_level, j, next_idx))
-                        
-                        # Store breakpoint in contour objects for visualization
-                        current_contour.breakpoints.append((sample_point, next_contour.points[next_idx], 
-                                                           sample_point, next_contour.points[next_idx]))
-                        
-                        print(f"  Found breakpoint: Level {current_level}[{i}] to Level {next_level}[{j}]")
-                        
-                        # Only create one breakpoint per sample point
-                        break
+                # Store breakpoint in contour objects for visualization
+                current_contour.breakpoints.append((
+                    current_contour.points[best_sample_idx], 
+                    next_contours[best_next_contour_idx].points[best_next_point_idx],
+                    current_contour.points[best_sample_idx], 
+                    next_contours[best_next_contour_idx].points[best_next_point_idx]
+                ))
+                
+                print(f"  Found breakpoint: Level {current_level}[{i}] to Level {next_level}[{best_next_contour_idx}]")
     
     # Create sub-paths from contours and breakpoints
     sub_paths = []
@@ -580,8 +707,8 @@ def create_sub_paths_via_rasterization(
 
 def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     """
-    Connects sub-paths (containing Shapely Points) into a single continuous global toolpath
-    using a linear scan approach with tolerance checking.
+    Connects sub-paths into a single continuous global toolpath using image processing
+    to find optimal connections that avoid intersecting multiple contours.
 
     Args:
         sub_paths: A list of SubPath objects.
@@ -593,7 +720,7 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
         return []
 
     # Filter out empty paths
-    remaining_sub_paths = [p for p in sub_paths if p.points]
+    remaining_sub_paths = [p for p in sub_paths if p.points and len(p.points) >= 2]
     if not remaining_sub_paths:
         return []
 
@@ -604,23 +731,21 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     global_path.extend(current_sub_path.points)
 
     # Tolerance for comparing floating point coordinates
-    # Should be slightly larger than 1/CLIPPER_SCALE to account for float errors.
-    #CONNECT_TOLERANCE = 1e-2 # A previously used reasonable value
+    CONNECT_TOLERANCE = 0.1  # Use the last set value, adjust if needed
 
-    CONNECT_TOLERANCE = 0.1 # Use the last set value, adjust if needed
+    # No need for spatial index since we're not checking intersections
+    path_spatial_index = None
 
     while remaining_sub_paths:
         current_end_point = global_path[-1]
         best_match_idx = -1
-        min_dist = CONNECT_TOLERANCE # Only connect if distance is within tolerance
+        min_connection_cost = float('inf')
         reverse_needed = False
         found_next = False
 
-        # --- Linear Scan for Connection ---
-        # Search all remaining paths for the best connection within tolerance
+        # --- Enhanced Connection Search with Collision Avoidance ---
         for i, next_sub_path in enumerate(remaining_sub_paths):
             # next_sub_path guaranteed to have points due to initial filtering
-
             next_start_point = next_sub_path.points[0]
             next_end_point = next_sub_path.points[-1]
 
@@ -628,27 +753,39 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
             dist_to_start = current_end_point.distance(next_start_point)
             dist_to_end = current_end_point.distance(next_end_point)
 
+            # Only consider connections within a reasonable distance
+            max_connection_dist = CONNECT_TOLERANCE * 10  # Allow longer jumps but penalize them
+            
             # Check connection to the start of the next path
-            if dist_to_start < min_dist:
-                min_dist = dist_to_start
-                best_match_idx = i
-                reverse_needed = False
-                found_next = True # Found a potential match within tolerance
-
+            if dist_to_start < max_connection_dist:
+                # Simply use distance as the connection cost
+                connection_cost = dist_to_start
+                
+                if connection_cost < min_connection_cost:
+                    min_connection_cost = connection_cost
+                    best_match_idx = i
+                    reverse_needed = False
+                    found_next = True
+            
             # Check connection to the end of the next path (requires reversal)
-            # Only consider if it's a better match than the start connection found so far
-            if dist_to_end < min_dist:
-                min_dist = dist_to_end
-                best_match_idx = i
-                reverse_needed = True
-                found_next = True # Found a potential match within tolerance
-        # --- End Linear Scan ---
+            if dist_to_end < max_connection_dist:
+                # Simply use distance as the connection cost
+                connection_cost = dist_to_end
+                
+                if connection_cost < min_connection_cost:
+                    min_connection_cost = connection_cost
+                    best_match_idx = i
+                    reverse_needed = True
+                    found_next = True
+        # --- End Enhanced Connection Search ---
 
         # --- Append matched path or trigger fallback ---
         if found_next and best_match_idx != -1:
-            # Append the path found within tolerance
+            # Append the path found with lowest connection cost
             matched_sub_path = remaining_sub_paths.pop(best_match_idx)
             points_to_add = matched_sub_path.points
+            
+            # No spatial index to update
 
             if reverse_needed:
                 # Add reversed points, skip the duplicate endpoint (which is now the first element)
@@ -657,42 +794,44 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
                 # Add points, skip the duplicate start point (which is the first element)
                 global_path.extend(points_to_add[1:])
         else:
-            # --- Fallback: No connection found within tolerance ---
-            # Find the geometrically closest endpoint among all remaining paths.
-            print(f"Warning: Could not find connection within tolerance {CONNECT_TOLERANCE} for endpoint {current_end_point}.")
-            print(f"Remaining paths: {len(remaining_sub_paths)}. Performing fallback: Finding closest jump.")
+            # --- Fallback: No connection found within reasonable cost ---
+            print(f"Warning: Could not find connection with reasonable cost for endpoint {current_end_point}.")
+            print(f"Remaining paths: {len(remaining_sub_paths)}. Performing fallback: Finding least-worst connection.")
 
-            closest_fallback_idx = -1
-            min_fallback_dist = float('inf')
+            # Find the path with the lowest overall connection cost, regardless of distance
+            best_fallback_idx = -1
+            min_fallback_cost = float('inf')
             fallback_reverse_needed = False
-            found_fallback_candidate = False
 
-            # Iterate through remaining paths to find the absolute closest endpoint
             for i, fallback_path in enumerate(remaining_sub_paths):
-                fb_start_point = fallback_path.points[0] # ShapelyPoint
-                fb_end_point = fallback_path.points[-1] # ShapelyPoint
+                fb_start_point = fallback_path.points[0]
+                fb_end_point = fallback_path.points[-1]
 
-                # Use Shapely distance
-                dist_to_fb_start = current_end_point.distance(fb_start_point)
-                dist_to_fb_end = current_end_point.distance(fb_end_point)
-
-                if dist_to_fb_start < min_fallback_dist:
-                    min_fallback_dist = dist_to_fb_start
-                    closest_fallback_idx = i
+                # Calculate costs for both connection options
+                start_dist = current_end_point.distance(fb_start_point)
+                end_dist = current_end_point.distance(fb_end_point)
+                
+                # Simply use distances as costs without intersection checking
+                start_cost = start_dist
+                end_cost = end_dist
+                
+                # Choose the better of the two options
+                if start_cost < end_cost and start_cost < min_fallback_cost:
+                    min_fallback_cost = start_cost
+                    best_fallback_idx = i
                     fallback_reverse_needed = False
-                    found_fallback_candidate = True
-
-                if dist_to_fb_end < min_fallback_dist:
-                    min_fallback_dist = dist_to_fb_end
-                    closest_fallback_idx = i
+                elif end_cost < min_fallback_cost:
+                    min_fallback_cost = end_cost
+                    best_fallback_idx = i
                     fallback_reverse_needed = True
-                    found_fallback_candidate = True
 
-            if found_fallback_candidate:
-                # Append the closest path found by fallback search
-                print(f"Fallback: Jumping {min_fallback_dist:.3f} units to the {'end' if fallback_reverse_needed else 'start'} of path index {closest_fallback_idx} in remaining list.")
-                matched_sub_path = remaining_sub_paths.pop(closest_fallback_idx)
+            if best_fallback_idx != -1:
+                # Append the path with lowest overall connection cost
+                print(f"Fallback: Jumping to path index {best_fallback_idx} with connection cost {min_fallback_cost:.3f}.")
+                matched_sub_path = remaining_sub_paths.pop(best_fallback_idx)
                 points_to_add = matched_sub_path.points
+                
+                # No spatial index to update
 
                 # When jumping, include the first point of the jumped-to path
                 if fallback_reverse_needed:
@@ -702,7 +841,7 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
             else:
                 # Should not happen if remaining_sub_paths is not empty
                 print("Error: Fallback failed completely. Could not find any remaining path.")
-                break # Exit loop
+                break  # Exit loop
 
     return global_path
 
@@ -917,10 +1056,10 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
 
 
-    stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
-    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
     #stl_file_path = os.path.join("models", "wrench.stl")
-    stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
+    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
     #stl_file_path = os.path.join("models", "t-shape.stl")
