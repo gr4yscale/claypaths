@@ -864,64 +864,62 @@ def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> 
     if not path or len(path) < 2 or segment_length <= 1e-6:
         return path # Cannot resample
 
-    # Create LineString and attempt to clean self-intersections/invalid geometry
+    # Create a clean LineString from the path
     try:
         line = ShapelyLineString(path)
-        # buffer(0) can fix invalid geometries like self-intersections
-        cleaned_geom = line.buffer(0)
-
-        if cleaned_geom.is_empty:
-             print("Resampling: buffer(0) resulted in empty geometry. Returning original path.")
-             return path
-        elif isinstance(cleaned_geom, ShapelyLineString):
-            line = cleaned_geom
-            print("Resampling: Applied buffer(0) cleanup, result is LineString.")
-        elif isinstance(cleaned_geom, MultiLineString):
-             # If buffer(0) results in multiple lines, pick the longest one
-             print("Resampling: buffer(0) resulted in MultiLineString, selecting longest.")
-             line = max(cleaned_geom.geoms, key=lambda l: l.length)
-        elif isinstance(cleaned_geom, ShapelyPolygon): # Use alias
-             # If it becomes a polygon (e.g., input was closed loop), use its exterior
-             print("Resampling: buffer(0) resulted in Polygon, using exterior.")
-             line = cleaned_geom.exterior
-             if not isinstance(line, ShapelyLineString): # Use alias
-                  print("Resampling: Polygon exterior is not LineString. Using original path.")
-                  line = ShapelyLineString(path) # Fallback
-        else:
-             print(f"Resampling: buffer(0) resulted in unexpected geometry type ({type(cleaned_geom)}). Using original line.")
-             # Fallback to original line if cleanup fails or returns something weird
-             line = ShapelyLineString(path)
-
+        if line.is_empty:
+            print("Resampling: Empty LineString. Returning original path.")
+            return path
     except Exception as e:
-        print(f"Resampling: Error during buffer(0) cleanup: {e}. Using original line.")
-        line = ShapelyLineString(path)
-
+        print(f"Resampling: Error creating LineString: {e}. Returning original path.")
+        return path
 
     total_length = line.length
     if total_length < segment_length:
-        print("Resampling: Path length shorter than segment length after cleanup.")
+        print("Resampling: Path length shorter than segment length.")
         return path # Path is shorter than desired segment length
 
     print(f"Resampling path (length {total_length:.2f}) with target segment length {segment_length:.3f}...")
 
-    num_segments = math.ceil(total_length / segment_length)
+    # Calculate number of segments needed
+    num_segments = max(1, int(total_length / segment_length))
+    
+    # Create a new path with evenly spaced points
     resampled_path: List[ShapelyPoint] = []
-
-    for i in range(num_segments + 1):
-        distance = min(i * segment_length, total_length) # Ensure we don't exceed total length
+    
+    # Always include the first point
+    resampled_path.append(ShapelyPoint(path[0].x, path[0].y))
+    
+    # Add evenly spaced points along the path
+    for i in range(1, num_segments):
+        # Calculate distance along the path for this point
+        distance = (i / num_segments) * total_length
+        
+        # Get point at this distance
         point = line.interpolate(distance)
-        # Avoid adding duplicate points if interpolation yields the same point
-        if not resampled_path or point.distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
+        
+        # Add to resampled path if it's not a duplicate
+        if point.distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
             resampled_path.append(point)
+    
+    # Always include the last point of the original path
+    last_point = ShapelyPoint(path[-1].x, path[-1].y)
+    if last_point.distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
+        resampled_path.append(last_point)
 
-    # Ensure the very last point of the original path is included if not already captured
-    if resampled_path and path[-1].distance(resampled_path[-1]) > POINT_EQUALITY_TOLERANCE:
-         # Check if the last interpolated point is very close to the end
-         if total_length - (num_segments * segment_length) > POINT_EQUALITY_TOLERANCE:
-              resampled_path.append(path[-1])
-
-
-    print(f"Resampled path has {len(resampled_path)} points.")
+    print(f"Resampled path has {len(resampled_path)} points (from original {len(path)} points).")
+    
+    # Verify segment lengths
+    total_new_length = 0
+    segment_lengths = []
+    for i in range(len(resampled_path) - 1):
+        seg_len = resampled_path[i].distance(resampled_path[i+1])
+        segment_lengths.append(seg_len)
+        total_new_length += seg_len
+    
+    avg_segment = sum(segment_lengths) / len(segment_lengths) if segment_lengths else 0
+    print(f"Average segment length: {avg_segment:.3f} mm (target: {segment_length:.3f} mm)")
+    
     return resampled_path
 
 
@@ -968,7 +966,15 @@ def visualize_final_toolpath(
             # Extract coordinates directly from Shapely Points
             tp_x = [p.x for p in path_to_visualize]
             tp_y = [p.y for p in path_to_visualize]
-            ax.plot(tp_x, tp_y, 'b-', marker='.', markersize=2, linewidth=1.0, label='Final Toolpath')
+            
+            # Plot the path as a continuous line
+            ax.plot(tp_x, tp_y, 'b-', linewidth=1.0, label='Final Toolpath')
+            
+            # Plot each point as a dot
+            if config.get('enable_resampling', False):
+                ax.scatter(tp_x, tp_y, color='cyan', s=10, marker='.', label='Resampled Points')
+            
+            # Mark start and end points
             ax.plot(tp_x[0], tp_y[0], 'go', markersize=6, label='Start') # Mark start
             ax.plot(tp_x[-1], tp_y[-1], 'ro', markersize=6, label='End')   # Mark end
 
@@ -1021,10 +1027,16 @@ def visualize_resampled_path(
         # Plot resampled path
         tp_x = [p.x for p in resampled_path]
         tp_y = [p.y for p in resampled_path]
+        
+        # Plot the path as a continuous line
         ax.plot(tp_x, tp_y, 'r-', linewidth=0.8, label='Resampled Path')
-        ax.plot(tp_x, tp_y, 'r.', markersize=4, label='Resampled Points') # Mark points
-        ax.plot(tp_x[0], tp_y[0], 'go', markersize=8, label='Start') # Mark start
-        ax.plot(tp_x[-1], tp_y[-1], 'mo', markersize=8, label='End')   # Mark end
+        
+        # Plot each point as a dot
+        ax.scatter(tp_x, tp_y, color='blue', s=15, marker='.', label='Resampled Points')
+        
+        # Mark start and end points
+        ax.plot(tp_x[0], tp_y[0], 'go', markersize=8, label='Start')
+        ax.plot(tp_x[-1], tp_y[-1], 'mo', markersize=8, label='End')
 
         plt.title(f"Resampled Toolpath (Seg Len ~{segment_length:.3f}mm) - Layer {layer_to_process_idx} ({os.path.basename(stl_file_path)})")
         plt.xlabel("X (mm)")
@@ -1056,9 +1068,10 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
 
 
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
-    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
-    #stl_file_path = os.path.join("models", "wrench.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
+    #kstl_file_path = os.path.join(project_root, "models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    stl_file_path = os.path.join("models", "wrench.stl")
     #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
