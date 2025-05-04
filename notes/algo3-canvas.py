@@ -399,124 +399,150 @@ def create_sub_paths_via_rasterization(
     leveled_contours: List[List[Contour]],
     line_spacing: float,
     resolution: float = 0.1 # mm per pixel
-    # Removed raster_line_thickness parameter
 ) -> List[SubPath]:
     """
-    Creates sub-paths representing both original contour segments and connecting paths
-    using rasterization and skeletonization. Replaces find_breakpoints and form_sub_paths.
-
+    Creates sub-paths by finding breakpoints between contours using image processing.
+    
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
-        resolution: The size of each pixel in millimeters.
+        resolution: The size of each pixel in millimeters (for image-based processing).
 
     Returns:
-        A list of SubPath objects representing the skeletonized path network.
+        A list of SubPath objects representing the connected contour segments.
     """
     if not cv2_available:
-        print("Raster Sub-path Creation: Skipping because OpenCV (cv2) or SciPy is not installed.")
+        print("Image Processing: Skipping because OpenCV (cv2) or SciPy is not installed.")
         return []
 
     all_contours = [c for level in leveled_contours for c in level if c.points and len(c.points) >= 2]
     if not all_contours:
-        print("Raster Sub-path Creation: No valid contours provided.")
+        print("Image Processing: No valid contours provided.")
         return []
 
-    print(f"Raster Sub-path Creation: Starting with {len(all_contours)} contours, resolution {resolution} mm/pixel.")
-
-    # 1. Determine bounds from ALL contours and image size
-    all_points = [p for contour in all_contours for p in contour.points]
-    if not all_points: return []
-
-    min_x = min(p.x for p in all_points)
-    max_x = max(p.x for p in all_points)
-    min_y = min(p.y for p in all_points)
-    max_y = max(p.y for p in all_points)
-
-    padding = line_spacing * 2 # Add padding around the contours
-    world_min_x = min_x - padding
-    world_min_y = min_y - padding
-    world_max_x = max_x + padding
-    world_max_y = max_y + padding
-
-    width_mm = world_max_x - world_min_x
-    height_mm = world_max_y - world_min_y
-
-    img_width = int(np.ceil(width_mm / resolution))
-    img_height = int(np.ceil(height_mm / resolution))
-
-    if img_width <= 0 or img_height <= 0 or img_width * img_height > 500_000_000: # Safety limit
-        print(f"Raster Sub-path Creation: Image size too large or invalid ({img_width}x{img_height}). Skipping.")
-        return []
-
-    print(f"Raster Sub-path Creation: Image size {img_width}x{img_height}.")
-
-    # 2. World-to-Image Transformation
-    def world_to_img(wx, wy):
-        ix = int((wx - world_min_x) / resolution)
-        iy = int((wy - world_min_y) / resolution)
-        # Clamp coordinates to be within image bounds
-        ix = max(0, min(img_width - 1, ix))
-        iy = max(0, min(img_height - 1, iy))
-        # OpenCV uses (col, row) = (x, y)
-        return ix, iy
-
-    # 3. Image-to-World Transformation
-    def img_to_world(ix, iy):
-        wx = world_min_x + (ix + 0.5) * resolution # Use pixel center
-        wy = world_min_y + (iy + 0.5) * resolution
-        return wx, wy
-
-    # 4. Rasterize ALL contours with specified thickness
-    image = np.zeros((img_height, img_width), dtype=np.uint8)
-    for contour in all_contours:
-        points_img = np.array([world_to_img(p.x, p.y) for p in contour.points], dtype=np.int32)
-        # Draw polylines with thickness 1 for skeletonization
-        cv2.polylines(image, [points_img], isClosed=False, color=255, thickness=1)
-
-    # 5. Skeletonize
-    try:
-        # Note: THINNING_ZHANGSUEN expects white foreground on black background
-        skeleton = cv2.ximgproc.thinning(image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-        print("Raster Sub-path Creation: Performed skeletonization.")
-    except AttributeError:
-        print("Raster Sub-path Creation: cv2.ximgproc.thinning not available (install opencv-contrib-python?). Cannot proceed.")
-        return []
-    except Exception as e:
-        print(f"Raster Sub-path Creation: Error during skeletonization: {e}. Cannot proceed.")
-        return []
-
-    # 6. Find contours of the skeleton - these are the sub-paths
-    # Use CHAIN_APPROX_NONE to get all points along the skeleton contours
-    skeleton_contours_img, _ = cv2.findContours(skeleton, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-
-    if not skeleton_contours_img:
-        print("Raster Sub-path Creation: No contours found after skeletonization.")
-        return []
-
-    # 7. Convert skeleton contours back to world coordinates and create SubPath objects
-    sub_paths_generated: List[SubPath] = []
-    for contour_img in skeleton_contours_img:
-        path_pixels = contour_img.reshape(-1, 2) # Reshape to list of [ix, iy]
-        if len(path_pixels) < 2: continue # Need at least two points for a path
-
-        world_points: List[ShapelyPoint] = []
-        for ix, iy in path_pixels:
-            wx, wy = img_to_world(ix, iy)
-            new_point = ShapelyPoint(wx, wy)
-            # Avoid adding duplicate consecutive points using distance check
-            if not world_points or world_points[-1].distance(new_point) > POINT_EQUALITY_TOLERANCE:
-                world_points.append(new_point)
-
-        # Add the subpath if it has enough points after removing duplicates
-        if len(world_points) >= 2:
-            sub_paths_generated.append(SubPath(world_points))
-
-    print(f"Raster Sub-path Creation: Extracted {len(sub_paths_generated)} sub-paths from skeleton.")
-
-    # Optional: Further processing like simplifying paths, ordering, etc.
-
-    return sub_paths_generated
+    print(f"Image Processing: Starting with {len(all_contours)} contours.")
+    
+    # Flatten contours by level for processing
+    contours_by_level = {}
+    for level_idx, level_list in enumerate(leveled_contours):
+        contours_by_level[level_idx] = [c for c in level_list if c.points and len(c.points) >= 2]
+    
+    # Find breakpoints between adjacent levels
+    all_breakpoints = []
+    
+    # Process each pair of adjacent levels
+    for level_idx in range(len(leveled_contours) - 1):
+        current_level = level_idx
+        next_level = level_idx + 1
+        
+        current_contours = contours_by_level.get(current_level, [])
+        next_contours = contours_by_level.get(next_level, [])
+        
+        if not current_contours or not next_contours:
+            continue
+            
+        print(f"Finding breakpoints between level {current_level} and {next_level}")
+        
+        # For each contour in current level, find closest points to contours in next level
+        for i, current_contour in enumerate(current_contours):
+            current_line = current_contour._line
+            if not current_line or current_line.is_empty:
+                continue
+                
+            for j, next_contour in enumerate(next_contours):
+                next_line = next_contour._line
+                if not next_line or next_line.is_empty:
+                    continue
+                
+                # Find closest points between the two contours
+                # Use distance matrix approach for better performance
+                current_points = np.array([(p.x, p.y) for p in current_contour.points])
+                next_points = np.array([(p.x, p.y) for p in next_contour.points])
+                
+                # Calculate pairwise distances between all points
+                if len(current_points) > 0 and len(next_points) > 0:
+                    # Use vectorized operations for speed
+                    distances = np.sqrt(((current_points[:, np.newaxis, :] - next_points[np.newaxis, :, :]) ** 2).sum(axis=2))
+                    
+                    # Find minimum distance and corresponding indices
+                    min_dist_idx = np.unravel_index(np.argmin(distances), distances.shape)
+                    min_dist = distances[min_dist_idx]
+                    
+                    # Only create breakpoints if contours are close enough
+                    if min_dist < line_spacing * 1.5:
+                        current_idx, next_idx = min_dist_idx
+                        
+                        # Get the actual points
+                        p1 = current_contour.points[current_idx]
+                        p2 = next_contour.points[next_idx]
+                        
+                        # Store breakpoint information
+                        all_breakpoints.append((current_level, i, current_idx, next_level, j, next_idx))
+                        
+                        # Store breakpoint in contour objects for visualization
+                        current_contour.breakpoints.append((p1, p2, p1, p2))
+                        
+                        print(f"  Found breakpoint: Level {current_level}[{i}] to Level {next_level}[{j}]")
+    
+    # Create sub-paths from contours and breakpoints
+    sub_paths = []
+    
+    # First, create a sub-path for each contour segment
+    for level_idx, level_contours in contours_by_level.items():
+        for contour_idx, contour in enumerate(level_contours):
+            # Check if this contour has breakpoints
+            contour_breakpoints = [(bp_idx, bp) for bp_idx, bp in enumerate(all_breakpoints) 
+                                  if (bp[0] == level_idx and bp[1] == contour_idx) or 
+                                     (bp[3] == level_idx and bp[4] == contour_idx)]
+            
+            if not contour_breakpoints:
+                # No breakpoints, add the entire contour as a sub-path
+                sub_paths.append(SubPath(contour.points))
+                continue
+            
+            # Sort breakpoints by position along the contour
+            contour_breakpoints.sort(key=lambda x: x[1][2] if x[1][0] == level_idx else x[1][5])
+            
+            # Create sub-paths between breakpoints
+            prev_idx = 0
+            for _, bp in contour_breakpoints:
+                if bp[0] == level_idx:  # Current contour is the "from" contour
+                    bp_idx = bp[2]
+                else:  # Current contour is the "to" contour
+                    bp_idx = bp[5]
+                
+                # Create sub-path from prev_idx to bp_idx
+                if bp_idx > prev_idx:
+                    segment_points = contour.points[prev_idx:bp_idx+1]
+                    if len(segment_points) >= 2:
+                        sub_paths.append(SubPath(segment_points))
+                
+                prev_idx = bp_idx
+            
+            # Add final segment if needed
+            if prev_idx < len(contour.points) - 1:
+                segment_points = contour.points[prev_idx:]
+                if len(segment_points) >= 2:
+                    sub_paths.append(SubPath(segment_points))
+    
+    # Now create connecting sub-paths between breakpoints
+    for bp in all_breakpoints:
+        current_level, current_contour_idx, current_point_idx, next_level, next_contour_idx, next_point_idx = bp
+        
+        # Get the actual contours
+        current_contour = contours_by_level[current_level][current_contour_idx]
+        next_contour = contours_by_level[next_level][next_contour_idx]
+        
+        # Get the actual points
+        p1 = current_contour.points[current_point_idx]
+        p2 = next_contour.points[next_point_idx]
+        
+        # Create a connecting sub-path
+        connecting_path = SubPath([p1, p2])
+        sub_paths.append(connecting_path)
+    
+    print(f"Created {len(sub_paths)} sub-paths from contours and breakpoints.")
+    return sub_paths
 
 
 #-----------------------------------------------------------------------------
