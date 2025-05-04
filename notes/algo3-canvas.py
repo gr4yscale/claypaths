@@ -588,19 +588,21 @@ def find_breakpoints_between_contours(
 # 6. Generating continuous path (Connecting Sub-paths) - Linear Scan Method
 #-----------------------------------------------------------------------------
 
-def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
+def connect_subpaths_to_breakpoints(sub_paths: List[SubPath]) -> Tuple[List[SubPath], Dict]:
     """
-    Connects sub-paths into a single continuous global toolpath using breakpoints
-    from skeleton analysis to create an optimal path.
+    First step of the connection process: Connect subpaths to their breakpoints.
+    This prepares the data for the final global path creation.
 
     Args:
         sub_paths: A list of SubPath objects or a SubPathsWithSkeletonData object.
 
     Returns:
-        A list of Shapely Points representing the final toolpath.
+        A tuple containing:
+        - List of processed SubPath objects with breakpoint connections
+        - Dictionary with connection metadata for the global path creation
     """
     if not sub_paths:
-        return []
+        return [], {}
 
     # Check if we have skeleton data available
     skeleton_data = None
@@ -617,10 +619,12 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
     # Filter out empty paths
     remaining_sub_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
     if not remaining_sub_paths:
-        return []
+        return [], {}
 
     # Check for breakpoints in the skeleton data
     all_breakpoints = []
+    connection_metadata = {}
+    
     if skeleton_data and 'all_breakpoints' in skeleton_data:
         all_breakpoints = skeleton_data.get('all_breakpoints', [])
         print(f"Found {len(all_breakpoints)} breakpoints in skeleton data")
@@ -628,27 +632,345 @@ def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
         if all_breakpoints:
             contours_by_level = skeleton_data.get('contours_by_level', {})
             if contours_by_level:
-                print("Using breakpoints for path connection")
-                return connect_using_breakpoints(remaining_sub_paths, all_breakpoints, contours_by_level)
+                print("Processing breakpoints for path connection")
+                processed_paths, connection_metadata = process_breakpoint_connections(
+                    remaining_sub_paths, 
+                    all_breakpoints, 
+                    contours_by_level
+                )
+                return processed_paths, connection_metadata
     
-    print("No breakpoints available, using distance-based connection")
-    return connect_using_distance(remaining_sub_paths)
+    print("No breakpoints available for connection")
+    return remaining_sub_paths, {}
 
-def connect_using_breakpoints(sub_paths: List[SubPath], all_breakpoints: list, contours_by_level: dict) -> List[ShapelyPoint]:
+def connect_all_subpaths_to_create_global_path(processed_paths: List[SubPath], connection_metadata: Dict) -> List[ShapelyPoint]:
     """
-    Placeholder for connecting sub-paths using breakpoints.
-    Since we've removed the breakpoint finding code, this just falls back to distance-based connection.
+    Second step of the connection process: Create a single continuous global path
+    from the processed subpaths and connection metadata.
+
+    Args:
+        processed_paths: List of SubPath objects with breakpoint connections
+        connection_metadata: Dictionary with connection information from the first step
+
+    Returns:
+        A list of Shapely Points representing the final continuous toolpath
+    """
+    if not processed_paths:
+        return []
+        
+    # If we have connection metadata, use it to create an optimized path
+    if connection_metadata and 'breakpoint_connections' in connection_metadata:
+        print("Creating global path using breakpoint connections")
+        return create_global_path_with_breakpoints(processed_paths, connection_metadata)
+    
+    # Fallback to distance-based connection if no metadata available
+    print("No connection metadata available, using distance-based connection")
+    return connect_using_distance(processed_paths)
+
+def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
+    """
+    Legacy function that combines both steps of the connection process.
+    For backward compatibility.
+
+    Args:
+        sub_paths: A list of SubPath objects or a SubPathsWithSkeletonData object.
+
+    Returns:
+        A list of Shapely Points representing the final toolpath.
+    """
+    processed_paths, connection_metadata = connect_subpaths_to_breakpoints(sub_paths)
+    return connect_all_subpaths_to_create_global_path(processed_paths, connection_metadata)
+
+def process_breakpoint_connections(sub_paths: List[SubPath], all_breakpoints: list, contours_by_level: dict) -> Tuple[List[SubPath], Dict]:
+    """
+    Processes subpaths and their breakpoint connections to prepare for global path creation.
     
     Args:
         sub_paths: List of SubPath objects
-        all_breakpoints: List of breakpoints (empty in this implementation)
+        all_breakpoints: List of breakpoints (p1, p2, p1_proj, p2_proj)
         contours_by_level: Dictionary mapping level indices to lists of contours
+        
+    Returns:
+        Tuple containing:
+        - List of processed SubPath objects
+        - Dictionary with connection metadata
+    """
+    if not all_breakpoints:
+        print("No breakpoints available for processing")
+        return sub_paths, {}
+        
+    print(f"Processing {len(all_breakpoints)} breakpoints for connections")
+    
+    # Step 1: Create a map of contours to their sub-paths
+    contour_to_subpath = {}
+    for i, sub_path in enumerate(sub_paths):
+        # Skip connecting segments (they're handled separately)
+        if len(sub_path.points) < 3:  # Connecting segments typically have just 2 points
+            continue
+            
+        # Find which contour this sub-path belongs to
+        for level_idx, contours in contours_by_level.items():
+            for contour in contours:
+                # Check if this sub-path matches this contour
+                if len(sub_path.points) == len(contour.points):
+                    # Check first and last points to confirm match
+                    if (sub_path.points[0].distance(contour.points[0]) < POINT_EQUALITY_TOLERANCE and
+                        sub_path.points[-1].distance(contour.points[-1]) < POINT_EQUALITY_TOLERANCE):
+                        contour_to_subpath[contour] = i
+                        break
+    
+    # Step 2: Create a map of breakpoints to their connecting segments
+    breakpoint_connections = {}
+    connecting_segments = []
+    for i, sub_path in enumerate(sub_paths):
+        if len(sub_path.points) == 2:  # This is a connecting segment
+            connecting_segments.append((i, sub_path))
+    
+    # Map breakpoints to their connecting segments
+    for bp_idx, bp in enumerate(all_breakpoints):
+        p1, p2, p1_proj, p2_proj = bp
+        
+        # Find connecting segments for this breakpoint
+        for seg_idx, segment in connecting_segments:
+            seg_p1, seg_p2 = segment.points
+            
+            # Check if this segment connects points from this breakpoint
+            if ((seg_p1.distance(p1) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p1_proj) < POINT_EQUALITY_TOLERANCE) or
+                (seg_p1.distance(p1_proj) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p1) < POINT_EQUALITY_TOLERANCE) or
+                (seg_p1.distance(p2) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p2_proj) < POINT_EQUALITY_TOLERANCE) or
+                (seg_p1.distance(p2_proj) < POINT_EQUALITY_TOLERANCE and seg_p2.distance(p2) < POINT_EQUALITY_TOLERANCE)):
+                
+                if bp_idx not in breakpoint_connections:
+                    breakpoint_connections[bp_idx] = []
+                breakpoint_connections[bp_idx].append(seg_idx)
+    
+    # Step 3: Create connection metadata for each contour
+    contour_breakpoints = {}
+    for bp_idx, bp in enumerate(all_breakpoints):
+        p1, p2, p1_proj, p2_proj = bp
+        
+        # Find which contours this breakpoint connects
+        source_contour = None
+        target_contour = None
+        
+        # Find source contour (contains p1/p2)
+        for level_idx, contours in contours_by_level.items():
+            for contour in contours:
+                for point in contour.points:
+                    if (point.distance(p1) < POINT_EQUALITY_TOLERANCE or 
+                        point.distance(p2) < POINT_EQUALITY_TOLERANCE):
+                        source_contour = contour
+                        break
+                if source_contour:
+                    break
+            if source_contour:
+                break
+                
+        # Find target contour (contains p1_proj/p2_proj)
+        for level_idx, contours in contours_by_level.items():
+            for contour in contours:
+                for point in contour.points:
+                    if (point.distance(p1_proj) < POINT_EQUALITY_TOLERANCE or 
+                        point.distance(p2_proj) < POINT_EQUALITY_TOLERANCE):
+                        target_contour = contour
+                        break
+                if target_contour:
+                    break
+            if target_contour:
+                break
+        
+        # Store the connection if both contours were found
+        if source_contour and target_contour:
+            if source_contour not in contour_breakpoints:
+                contour_breakpoints[source_contour] = []
+            
+            # Store the breakpoint index, target contour, and position info
+            # Find position along source contour for sorting later
+            position = -1
+            for i, point in enumerate(source_contour.points):
+                if point.distance(p1) < POINT_EQUALITY_TOLERANCE:
+                    position = i
+                    break
+            
+            contour_breakpoints[source_contour].append({
+                'bp_idx': bp_idx,
+                'target_contour': target_contour,
+                'position': position,
+                'breakpoint': bp
+            })
+    
+    # Sort breakpoints by position along each contour
+    for contour in contour_breakpoints:
+        contour_breakpoints[contour].sort(key=lambda x: x['position'])
+    
+    # Create the connection metadata
+    connection_metadata = {
+        'contour_to_subpath': contour_to_subpath,
+        'breakpoint_connections': breakpoint_connections,
+        'contour_breakpoints': contour_breakpoints,
+        'all_breakpoints': all_breakpoints,
+        'contours_by_level': contours_by_level
+    }
+    
+    return sub_paths, connection_metadata
+
+def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_metadata: Dict) -> List[ShapelyPoint]:
+    """
+    Creates a global continuous path using the processed breakpoint connections.
+    
+    Args:
+        sub_paths: List of SubPath objects
+        connection_metadata: Dictionary with connection information
         
     Returns:
         A list of Shapely Points representing the connected path
     """
-    print("No breakpoints available, falling back to distance-based connection")
-    return connect_using_distance(sub_paths)
+    if not connection_metadata:
+        print("No connection metadata available, falling back to distance-based connection")
+        return connect_using_distance(sub_paths)
+    
+    # Extract metadata
+    contour_to_subpath = connection_metadata.get('contour_to_subpath', {})
+    breakpoint_connections = connection_metadata.get('breakpoint_connections', {})
+    contour_breakpoints = connection_metadata.get('contour_breakpoints', {})
+    contours_by_level = connection_metadata.get('contours_by_level', {})
+    
+    if not contour_to_subpath or not contours_by_level:
+        print("Incomplete connection metadata, falling back to distance-based connection")
+        return connect_using_distance(sub_paths)
+    
+    print("Creating global path using breakpoint connections")
+    
+    # Initialize the global path
+    global_path = []
+    visited_contours = set()
+    visited_segments = set()
+    
+    # Start with the first contour in level 0
+    if 0 in contours_by_level and contours_by_level[0]:
+        start_contour = contours_by_level[0][0]
+        current_contour = start_contour
+        current_level = 0
+    else:
+        print("No level 0 contours found, falling back to distance-based")
+        return connect_using_distance(sub_paths)
+    
+    # Main traversal loop - follow contours in counterclockwise direction
+    while len(visited_contours) < sum(len(contours) for contours in contours_by_level.values()):
+        # If we haven't visited this contour yet, add its points to the path
+        if current_contour not in visited_contours:
+            if current_contour in contour_to_subpath:
+                subpath_idx = contour_to_subpath[current_contour]
+                subpath = sub_paths[subpath_idx]
+                
+                # Add points in counterclockwise direction
+                if len(global_path) == 0:
+                    # First contour, add all points
+                    global_path.extend(subpath.points)
+                else:
+                    # Connect to previous point
+                    last_point = global_path[-1]
+                    
+                    # Find the closest endpoint of the contour
+                    start_dist = last_point.distance(subpath.points[0])
+                    end_dist = last_point.distance(subpath.points[-1])
+                    
+                    if start_dist < end_dist:
+                        # Add points in original order, skipping first to avoid duplication
+                        global_path.extend(subpath.points[1:])
+                    else:
+                        # Add points in reverse order, skipping last to avoid duplication
+                        global_path.extend(reversed(subpath.points[:-1]))
+                
+                visited_contours.add(current_contour)
+            
+            # Check if this contour has breakpoints to follow
+            if current_contour in contour_breakpoints and contour_breakpoints[current_contour]:
+                # Get the sorted breakpoints for this contour
+                sorted_bps = contour_breakpoints[current_contour]
+                
+                # Try to connect using each breakpoint
+                for bp_info in sorted_bps:
+                    bp_idx = bp_info['bp_idx']
+                    target_contour = bp_info['target_contour']
+                    bp = bp_info['breakpoint']
+                    
+                    # Skip if target contour already visited
+                    if target_contour in visited_contours:
+                        continue
+                    
+                    # Skip if we've already used this breakpoint
+                    if bp_idx in breakpoint_connections:
+                        # Find the connecting segments for this breakpoint
+                        for seg_idx in breakpoint_connections[bp_idx]:
+                            if seg_idx not in visited_segments:
+                                # Add this connecting segment
+                                segment = sub_paths[seg_idx]
+                                
+                                # Check if we need to reverse the segment
+                                last_point = global_path[-1]
+                                if last_point.distance(segment.points[0]) > last_point.distance(segment.points[-1]):
+                                    global_path.extend(reversed(segment.points))
+                                else:
+                                    global_path.extend(segment.points[1:])  # Skip first point to avoid duplication
+                                
+                                visited_segments.add(seg_idx)
+                                
+                                # Move to the target contour
+                                if target_contour not in visited_contours:
+                                    # Find the level of the target contour
+                                    for level_idx, contours in contours_by_level.items():
+                                        if target_contour in contours:
+                                            current_contour = target_contour
+                                            current_level = level_idx
+                                            break
+                                    break
+        
+        # If we couldn't find a connection or have visited this contour, move to the next unvisited contour
+        if current_contour in visited_contours:
+            found_next = False
+            
+            # Try to find an unvisited contour in the current level first
+            if current_level in contours_by_level:
+                for next_contour in contours_by_level[current_level]:
+                    if next_contour not in visited_contours:
+                        current_contour = next_contour
+                        found_next = True
+                        break
+            
+            # If we couldn't find an unvisited contour in the current level,
+            # try other levels
+            if not found_next:
+                for level_idx, contours in contours_by_level.items():
+                    for next_contour in contours:
+                        if next_contour not in visited_contours:
+                            current_contour = next_contour
+                            current_level = level_idx
+                            found_next = True
+                            break
+                    if found_next:
+                        break
+            
+            # If we still couldn't find an unvisited contour, we're done
+            if not found_next:
+                break
+    
+    # Add any remaining unvisited contours using distance-based approach
+    remaining_contours = []
+    for level_idx, contours in contours_by_level.items():
+        for contour in contours:
+            if contour not in visited_contours and contour in contour_to_subpath:
+                remaining_contours.append(sub_paths[contour_to_subpath[contour]])
+    
+    if remaining_contours:
+        print(f"Adding {len(remaining_contours)} remaining contours using distance-based approach")
+        remaining_path = connect_using_distance(remaining_contours, global_path[-1] if global_path else None)
+        if global_path and remaining_path:
+            global_path.extend(remaining_path[1:])  # Skip first point to avoid duplication
+        elif remaining_path:
+            global_path.extend(remaining_path)
+    
+    return global_path
 
 def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[ShapelyPoint]:
     """
@@ -1167,9 +1489,8 @@ if __name__ == '__main__':
     print(f"Total sub-paths created: {len(sub_paths)}")
 
 
-    # --- 6. Connect Sub-paths (Using Linear Scan Method) ---
-    # The sub-paths from rasterization should ideally form a connected graph
-    print("\n--- Connecting Sub-paths ---")
+    # --- 6a. Connect Sub-paths to Breakpoints ---
+    print("\n--- Connecting Sub-paths to Breakpoints ---")
     
     # Debug check for breakpoints
     if hasattr(sub_paths, 'skeleton_data') and 'all_breakpoints' in sub_paths.skeleton_data:
@@ -1177,9 +1498,15 @@ if __name__ == '__main__':
     else:
         print("DEBUG: Main function - no breakpoints found in data")
     
-    # Extract the actual sub_paths from the wrapper object if needed
-    sub_paths_list = sub_paths.paths if hasattr(sub_paths, 'paths') else sub_paths
-    final_toolpath = connect_sub_paths(sub_paths) # Pass the whole object to preserve junction points
+    # Step 1: Connect subpaths to breakpoints
+    processed_paths, connection_metadata = connect_subpaths_to_breakpoints(sub_paths)
+    print(f"Processed {len(processed_paths)} sub-paths with breakpoint connections")
+    
+    # --- 6b. Create Global Path from Connected Sub-paths ---
+    print("\n--- Creating Global Path from Connected Sub-paths ---")
+    
+    # Step 2: Create the global path
+    final_toolpath = connect_all_subpaths_to_create_global_path(processed_paths, connection_metadata)
     print(f"Total points in connected toolpath: {len(final_toolpath)}")
 
     # --- 6b. Optional Path Resampling ---
