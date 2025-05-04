@@ -418,65 +418,40 @@ def create_sub_paths(
     """
     print("Finding breakpoints between contours...")
     
-    # Flatten contours by level for processing - use dictionary comprehension for efficiency
-    contours_by_level = {
-        level_idx: [c for c in level_list if c.points and len(c.points) >= 2]
-        for level_idx, level_list in enumerate(leveled_contours)
-    }
+    # Flatten contours by level for processing
+    contours_by_level = {}
+    for level_idx, level_list in enumerate(leveled_contours):
+        contours_by_level[level_idx] = [c for c in level_list if c.points and len(c.points) >= 2]
     
-    # Filter out empty levels
-    contours_by_level = {k: v for k, v in contours_by_level.items() if v}
-    
-    # Quick check if we have any contours
-    if not contours_by_level:
+    all_contours = [c for level in leveled_contours for c in level if c.points and len(c.points) >= 2]
+    if not all_contours:
         print("No valid contours provided.")
         return []
-    
-    # Count total contours
-    total_contours = sum(len(contours) for contours in contours_by_level.values())
-    print(f"Starting with {total_contours} contours.")
+
+    print(f"Starting with {len(all_contours)} contours.")
     
     # Get the breakpoint period from config
     config = get_config()
     n_layers_period = config.get('breakpoint_period', 5)  # Default to 5 if not specified
     
-    # Pre-allocate for all breakpoints
+    # Find breakpoints between adjacent contour levels
     all_breakpoints = []
     
     # Process each level (except the last one)
-    level_indices = sorted(contours_by_level.keys())
-    for i in range(len(level_indices) - 1):
-        level_idx = level_indices[i]
-        next_level_idx = level_indices[i + 1]
-        
+    for level_idx in range(len(contours_by_level) - 1):
         current_level_contours = contours_by_level[level_idx]
-        next_level_contours = contours_by_level[next_level_idx]
+        next_level_contours = contours_by_level[level_idx + 1]
         
-        print(f"Finding breakpoints between level {level_idx} and {next_level_idx}")
-        
-        # Pre-compute contour centroids for faster proximity filtering
-        next_level_centroids = []
-        for next_contour in next_level_contours:
-            if next_contour._line and not next_contour._line.is_empty:
-                centroid = next_contour._line.centroid
-                next_level_centroids.append((next_contour, centroid))
+        # Skip if either level has no contours
+        if not current_level_contours or not next_level_contours:
+            continue
+            
+        print(f"Finding breakpoints between level {level_idx} and {level_idx + 1}")
         
         # Process each contour in the current level
         for current_contour in current_level_contours:
-            if not current_contour._line or current_contour._line.is_empty:
-                continue
-                
-            current_centroid = current_contour._line.centroid
-            
             # Find candidate neighboring contours in the next level
-            # Only process contours that are close enough (filter by centroid distance)
-            max_distance = line_spacing * 3  # Reasonable proximity threshold
-            
-            for next_contour, next_centroid in next_level_centroids:
-                # Skip if contours are too far apart
-                if current_centroid.distance(next_centroid) > max_distance:
-                    continue
-                    
+            for next_contour in next_level_contours:
                 # Find breakpoints between these two contours
                 breakpoints = find_breakpoints_between_contours(
                     current_contour, 
@@ -491,39 +466,24 @@ def create_sub_paths(
                     all_breakpoints.extend(breakpoints)
                     
                     # Create connecting segments between breakpoints
-                    # Pre-allocate to avoid repeated append operations
-                    new_segments = []
                     for p1, p2, p1_proj, p2_proj in breakpoints:
-                        new_segments.append(Segment(p1, p1_proj))
-                        new_segments.append(Segment(p2, p2_proj))
-                    
-                    current_contour.connecting_segments.extend(new_segments)
+                        current_contour.connecting_segments.append(Segment(p1, p1_proj))
+                        current_contour.connecting_segments.append(Segment(p2, p2_proj))
     
     print(f"Found {len(all_breakpoints)} breakpoints across all contours")
     
     # Create sub-paths from contours, incorporating breakpoints
-    # Pre-allocate for better performance
     sub_paths = []
-    sub_paths_capacity = total_contours + len(all_breakpoints) * 2
-    sub_paths = [None] * sub_paths_capacity
-    sub_path_count = 0
-    
-    for level_contours in contours_by_level.values():
-        for contour in level_contours:
+    for level_idx, level_contours in contours_by_level.items():
+        for contour_idx, contour in enumerate(level_contours):
             if contour.points and len(contour.points) >= 2:
                 # Create a sub-path from the contour points
-                if sub_path_count < sub_paths_capacity:
-                    sub_paths[sub_path_count] = SubPath(contour.points)
-                    sub_path_count += 1
+                sub_paths.append(SubPath(contour.points))
                 
                 # Create additional sub-paths for connecting segments if they exist
                 for segment in contour.connecting_segments:
-                    if sub_path_count < sub_paths_capacity:
-                        sub_paths[sub_path_count] = SubPath([segment.p1, segment.p2])
-                        sub_path_count += 1
+                    sub_paths.append(SubPath([segment.p1, segment.p2]))
     
-    # Trim the list to actual size
-    sub_paths = sub_paths[:sub_path_count]
     print(f"Created {len(sub_paths)} sub-paths from contours and connections")
     
     # Create a wrapper object to hold both the sub_paths and skeleton data
@@ -569,10 +529,13 @@ def find_breakpoints_between_contours(
     Returns:
         List of breakpoint tuples (p1, p2, p1_proj, p2_proj)
     """
-    # Skip if either contour is invalid - quick validation
-    if (not current_contour.points or len(current_contour.points) < 2 or
-        not next_contour.points or len(next_contour.points) < 2):
-        return []
+    breakpoints = []
+    
+    # Skip if either contour is invalid
+    if not current_contour.points or len(current_contour.points) < 2:
+        return breakpoints
+    if not next_contour.points or len(next_contour.points) < 2:
+        return breakpoints
     
     # Get the total length of the current contour
     total_length = current_contour.length()
@@ -582,21 +545,12 @@ def find_breakpoints_between_contours(
     target_spacing = line_spacing * n_layers_period
     num_breakpoints = max(1, int(total_length / target_spacing))
     
-    # Pre-allocate the breakpoints list for better performance
-    breakpoints = []
-    
-    # Create a spatial index for the next contour's segments for faster lookup
-    next_contour_segments = next_contour.get_segments()
-    
-    # Pre-compute all the points we'll need at once to avoid repeated calls
-    p1_points = []
-    p2_points = []
-    
+    # For each breakpoint position
     for i in range(num_breakpoints):
         # Calculate the position along the contour for p1
         p1_distance = (i / num_breakpoints) * total_length
         
-        # Get the point at this distance
+        # Get the point at this distance and its segment
         p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
         
         if p1 is None or p1_segment is None:
@@ -607,43 +561,25 @@ def find_breakpoints_between_contours(
         if p2_distance > total_length:
             p2_distance = p2_distance - total_length  # Wrap around
             
-        # Get the point at this distance
+        # Get the point at this distance and its segment
         p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
         
         if p2 is None or p2_segment is None:
             continue
             
-        p1_points.append((p1, i))
-        p2_points.append((p2, i))
-    
-    # Batch process all p1 points
-    p1_projections = {}
-    for p1, i in p1_points:
-        # Find the closest segment on the next contour
-        p1_proj_segment, _, _ = find_closest_segment_to_point(p1, next_contour)
+        # Find the closest segments on the next contour
+        p1_proj_segment, p1_dist, _ = find_closest_segment_to_point(p1, next_contour)
+        p2_proj_segment, p2_dist, _ = find_closest_segment_to_point(p2, next_contour)
         
-        if p1_proj_segment is not None:
-            # Project p1 onto the next contour
-            p1_proj = p1_proj_segment.point_projection(p1)
-            p1_projections[i] = (p1, p1_proj)
-    
-    # Batch process all p2 points
-    p2_projections = {}
-    for p2, i in p2_points:
-        # Find the closest segment on the next contour
-        p2_proj_segment, _, _ = find_closest_segment_to_point(p2, next_contour)
+        if p1_proj_segment is None or p2_proj_segment is None:
+            continue
+            
+        # Project p1 and p2 onto the next contour
+        p1_proj = p1_proj_segment.point_projection(p1)
+        p2_proj = p2_proj_segment.point_projection(p2)
         
-        if p2_proj_segment is not None:
-            # Project p2 onto the next contour
-            p2_proj = p2_proj_segment.point_projection(p2)
-            p2_projections[i] = (p2, p2_proj)
-    
-    # Create breakpoints from the projections
-    for i in range(num_breakpoints):
-        if i in p1_projections and i in p2_projections:
-            p1, p1_proj = p1_projections[i]
-            p2, p2_proj = p2_projections[i]
-            breakpoints.append((p1, p2, p1_proj, p2_proj))
+        # Add the breakpoint
+        breakpoints.append((p1, p2, p1_proj, p2_proj))
     
     return breakpoints
 
@@ -1048,35 +984,8 @@ def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[S
         global_path.extend(current_sub_path.points)
         current_end_point = global_path[-1]
     else:
-        # Check if start_point is already very close to the first point of any subpath
-        closest_path_idx = -1
-        min_dist = float('inf')
-        
-        for i, path in enumerate(remaining_sub_paths):
-            start_dist = start_point.distance(path.points[0])
-            end_dist = start_point.distance(path.points[-1])
-            
-            if start_dist < min_dist:
-                min_dist = start_dist
-                closest_path_idx = i
-                reverse_needed = False
-            
-            if end_dist < min_dist:
-                min_dist = end_dist
-                closest_path_idx = i
-                reverse_needed = True
-        
-        # If we found a very close point, start with that subpath
-        if closest_path_idx >= 0 and min_dist < POINT_EQUALITY_TOLERANCE:
-            closest_path = remaining_sub_paths.pop(closest_path_idx)
-            if reverse_needed:
-                global_path.extend(reversed(closest_path.points))
-            else:
-                global_path.extend(closest_path.points)
-            current_end_point = global_path[-1]
-        else:
-            global_path.append(start_point)
-            current_end_point = start_point
+        global_path.append(start_point)
+        current_end_point = start_point
 
     # Tolerance for comparing floating point coordinates
     CONNECT_TOLERANCE = 0.1  # Use the last set value, adjust if needed
@@ -1517,8 +1426,8 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
-    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
-    stl_file_path = os.path.join("models", "wrench.stl")
+    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    #stl_file_path = os.path.join("models", "wrench.stl")
 
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
