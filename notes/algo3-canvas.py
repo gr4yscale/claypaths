@@ -1651,6 +1651,79 @@ def resample_path_uniformly(path: List[ShapelyPoint], segment_length: float) -> 
 # 8. Visualization Functions
 #-----------------------------------------------------------------------------
 
+def visualize_subpaths(sub_paths_data: Dict, layer_to_process_idx: int, stl_file_path: str):
+    """
+    Visualizes the subpaths returned from create_sub_paths with colors distinguishing their index.
+    
+    Args:
+        sub_paths_data: Dictionary containing paths, contours_by_level, and all_breakpoints
+        layer_to_process_idx: The layer index being processed
+        stl_file_path: Path to the STL file being processed
+    """
+    print("\n--- Visualizing Subpaths ---")
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Extract subpaths from the data
+        sub_paths_list = sub_paths_data.get('paths', [])
+        if not sub_paths_list:
+            print("No subpaths to visualize.")
+            return
+            
+        # Filter out empty paths
+        valid_sub_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
+        if not valid_sub_paths:
+            print("No valid subpaths to visualize.")
+            return
+            
+        plt.figure(figsize=(12, 10))
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')
+        
+        # Create a colormap with distinct colors for each subpath
+        colors = plt.cm.tab20(np.linspace(0, 1, len(valid_sub_paths)))
+        
+        # Plot each subpath with a different color
+        for i, subpath in enumerate(valid_sub_paths):
+            # Extract coordinates
+            x = [p.x for p in subpath.points]
+            y = [p.y for p in subpath.points]
+            
+            # Plot the path
+            ax.plot(x, y, '-', color=colors[i % len(colors)], linewidth=1.5, 
+                   label=f'Subpath {i}' if i < 20 else None)  # Limit legend entries
+            
+            # Mark start and end points
+            ax.plot(x[0], y[0], 'o', color=colors[i % len(colors)], markersize=5)
+            ax.plot(x[-1], y[-1], 's', color=colors[i % len(colors)], markersize=5)
+            
+            # Add subpath index as text at the middle of the path
+            mid_idx = len(x) // 2
+            ax.text(x[mid_idx], y[mid_idx], f'{i}', fontsize=8, ha='center', va='center',
+                   bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        
+        plt.title(f"Subpaths from create_sub_paths - Layer {layer_to_process_idx} ({os.path.basename(stl_file_path)})")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        
+        # Create a custom legend with a subset of paths to avoid overcrowding
+        if len(valid_sub_paths) > 20:
+            plt.figtext(0.5, 0.01, f"Total of {len(valid_sub_paths)} subpaths. Only first 20 shown in legend.", 
+                       ha="center", fontsize=10, bbox={"facecolor":"orange", "alpha":0.2, "pad":5})
+        
+        plt.legend(fontsize='small', loc='best')
+        plt.grid(True, linestyle=':', alpha=0.6)
+        plt.tight_layout()
+        plt.show()
+        
+    except ImportError:
+        print("\nInstall matplotlib to visualize the subpaths: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during subpath visualization: {e}")
+        import traceback
+        traceback.print_exc()
+
 def visualize_final_toolpath(
     shapely_polygon: ShapelyPolygon,
     offset_results: List[List[Contour]],
@@ -2033,6 +2106,10 @@ if __name__ == '__main__':
     layer_height = config.get('layer_height', 1.0)
     layer_to_process_idx = config.get('layer_to_process_for_algo3', 2) # Choose a layer index
     n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
+    
+    # Add the new visualization option to the config if not present
+    if 'visualize_subpaths' not in config:
+        config['visualize_subpaths'] = True
 
     # Select STL file
     #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
@@ -2193,7 +2270,10 @@ if __name__ == '__main__':
     if not sub_paths:
          sys.exit("Failed to create sub-paths using rasterization.")
     print(f"Total sub-paths created: {len(sub_paths)}")
-
+    
+    # --- 5b. Visualize Sub-paths ---
+    if config.get('visualize_subpaths', True):  # Add a config option, default to True
+        visualize_subpaths(sub_paths, layer_to_process_idx, stl_file_path)
 
     # --- 6. Create Global Path from Sub-paths and Breakpoints ---
     print("\n--- Creating Global Path from Sub-paths and Breakpoints ---")
