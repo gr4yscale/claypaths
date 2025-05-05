@@ -407,16 +407,26 @@ def create_sub_paths(
 ) -> List[SubPath]:
     """
     Creates sub-paths by finding optimal breakpoints between contours.
+    
     Identifies breakpoints in each contour that will be used to connect one contour to another.
-    Uses a spatial index to speed up finding nearby contours.
-    Uses parallel processing for better performance.
+    Within each contour, we find a pair of breakpoints p1 and p2 with the 
+    distance from p1 to p2 equal to the line spacing.
+    The projected points p1' and p2' of p1 and p2 onto a candidate neighbouring 
+    contour are also identified.
+    
+    Two new segments will be added to connect p1 with p1', and p2 with p2'.
+    The breakpoint selection will be repeated every n layers (configure with yaml).
+    
+    After adding connecting line segments to join adjacent contours at each breakpoint,
+    we form sub-paths by looping through each contour in the counterclockwise direction
+    to find continuous sections.
     
     Args:
         leveled_contours: Contours grouped by level (output of re_level_contours).
         line_spacing: The characteristic width/distance between contours.
 
     Returns:
-        A list of SubPath objects representing the connected contour segments.
+        A dictionary containing paths, contours_by_level, and all_breakpoints.
     """
     print("Finding breakpoints between contours...")
     
@@ -587,10 +597,12 @@ def create_sub_paths(
     for level_idx, level_contours in contours_by_level.items():
         for contour_idx, contour in enumerate(level_contours):
             if contour.points and len(contour.points) >= 2:
-                # Create a sub-path from the contour points
+                # Create a sub-path from the contour points in counterclockwise direction
+                # This ensures we're traversing the contour correctly
                 sub_paths.append(SubPath(contour.points))
                 
                 # Create additional sub-paths for connecting segments if they exist
+                # These segments connect p1 with p1' and p2 with p2'
                 for segment in contour.connecting_segments:
                     sub_paths.append(SubPath([segment.p1, segment.p2]))
     
@@ -635,7 +647,18 @@ def find_breakpoints_between_contours(
 ) -> List[Tuple[ShapelyPoint, ShapelyPoint, ShapelyPoint, ShapelyPoint]]:
     """
     Finds breakpoints between two contours.
-    Uses Shapely's distance calculations for efficiency.
+    
+    Within each contour, we find a pair of breakpoints p1 and p2 with the 
+    distance from p1 to p2 equal to the line spacing.
+    The projected points p1' and p2' of p1 and p2 onto a candidate neighbouring 
+    contour are also identified.
+    
+    p0 is the first point in a contour.
+    A segment for p1 is selected based on the accumulated length from p0.
+    After selecting an appropriate segment, p1 is the first point of that segment.
+    
+    Two new segments will be added to connect p1 with p1', and p2 with p2'.
+    The breakpoint selection will be repeated every n layers (configure with yaml).
     
     Args:
         current_contour: The current contour
@@ -1246,6 +1269,10 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
     """
     Creates a global continuous path using the processed breakpoint connections.
     
+    Forms a continuous path by looping through each contour in the counterclockwise direction
+    and connecting adjacent contours at the breakpoints. The path traverses from one contour
+    to another using the connecting segments created at the breakpoints.
+    
     Args:
         sub_paths: List of SubPath objects
         connection_metadata: Dictionary with connection information
@@ -1283,7 +1310,11 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
         print("No level 0 contours found, falling back to distance-based")
         return connect_using_distance(sub_paths)
     
-    # Main traversal loop - follow contours in counterclockwise direction
+    # Get traversal direction from config
+    config = get_config()
+    counterclockwise = config.get('counterclockwise_traversal', True)
+    
+    # Main traversal loop - follow contours in specified direction (default: counterclockwise)
     while len(visited_contours) < sum(len(contours) for contours in contours_by_level.values()):
         # If we haven't visited this contour yet, add its points to the path
         if current_contour not in visited_contours:
@@ -1291,10 +1322,14 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
                 subpath_idx = contour_to_subpath[current_contour]
                 subpath = sub_paths[subpath_idx]
                 
-                # Add points in counterclockwise direction
+                # Add points in the specified direction
                 if len(global_path) == 0:
                     # First contour, add all points
-                    global_path.extend(subpath.points)
+                    if counterclockwise:
+                        global_path.extend(subpath.points)
+                    else:
+                        # For clockwise, reverse the points
+                        global_path.extend(reversed(subpath.points))
                 else:
                     # Connect to previous point
                     last_point = global_path[-1]
@@ -1303,12 +1338,21 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
                     start_dist = last_point.distance(subpath.points[0])
                     end_dist = last_point.distance(subpath.points[-1])
                     
-                    if start_dist < end_dist:
-                        # Add points in original order, skipping first to avoid duplication
-                        global_path.extend(subpath.points[1:])
+                    if counterclockwise:
+                        if start_dist < end_dist:
+                            # Add points in original order, skipping first to avoid duplication
+                            global_path.extend(subpath.points[1:])
+                        else:
+                            # Add points in reverse order, skipping last to avoid duplication
+                            global_path.extend(reversed(subpath.points[:-1]))
                     else:
-                        # Add points in reverse order, skipping last to avoid duplication
-                        global_path.extend(reversed(subpath.points[:-1]))
+                        # For clockwise traversal, reverse the logic
+                        if end_dist < start_dist:
+                            # Add points in reverse order, skipping first to avoid duplication
+                            global_path.extend(reversed(subpath.points[:-1]))
+                        else:
+                            # Add points in original order, skipping last to avoid duplication
+                            global_path.extend(subpath.points[1:])
                 
                 visited_contours.add(current_contour)
             
