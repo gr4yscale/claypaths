@@ -711,7 +711,9 @@ def find_breakpoints_between_contours(
     # Calculate number of breakpoints based on selected distribution method
     if breakpoint_distribution == 'fixed':
         # Fixed number of breakpoints regardless of contour length
-        num_breakpoints = min(max(min_breakpoints, int(config.get('fixed_breakpoints', 3))), max_breakpoints)
+        fixed_bp = int(config.get('fixed_breakpoints', 20))
+        print(f"Using fixed breakpoints: {fixed_bp} (min: {min_breakpoints}, max: {max_breakpoints})")
+        num_breakpoints = min(max(min_breakpoints, fixed_bp), max_breakpoints)
         
     elif breakpoint_distribution == 'length_proportional':
         # Number of breakpoints proportional to contour length
@@ -1313,6 +1315,7 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
     # Get traversal direction from config
     config = get_config()
     counterclockwise = config.get('counterclockwise_traversal', True)
+    print(f"Using {'counterclockwise' if counterclockwise else 'clockwise'} traversal direction")
     
     # Main traversal loop - follow contours in specified direction (default: counterclockwise)
     while len(visited_contours) < sum(len(contours) for contours in contours_by_level.values()):
