@@ -1003,43 +1003,60 @@ def connect_subpaths_to_breakpoints(sub_paths_data: Dict) -> Tuple[List[SubPath]
         
     return remaining_sub_paths, {}
 
-def connect_all_subpaths_to_create_global_path(processed_paths: List[SubPath], connection_metadata: Dict) -> List[ShapelyPoint]:
+def connect_all_subpaths_to_create_global_path(sub_paths_data: Dict) -> List[ShapelyPoint]:
     """
-    Second step of the connection process: Create a single continuous global path
-    from the processed subpaths and connection metadata.
+    Creates a single continuous global path from subpaths and breakpoints.
+    Bypasses the separate connect_subpaths_to_breakpoints step.
 
     Args:
-        processed_paths: List of SubPath objects with breakpoint connections
-        connection_metadata: Dictionary with connection information from the first step
+        sub_paths_data: A dictionary containing paths, contours_by_level, and all_breakpoints.
 
     Returns:
         A list of Shapely Points representing the final continuous toolpath
     """
+    if not sub_paths_data:
+        return []
+    
+    # Extract data directly from sub_paths_data
+    sub_paths_list = sub_paths_data.get('paths', [])
+    all_breakpoints = sub_paths_data.get('all_breakpoints', [])
+    contours_by_level = sub_paths_data.get('contours_by_level', {})
+    
+    # Filter out empty paths
+    processed_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
     if not processed_paths:
         return []
+    
+    # If we have breakpoints and contours, process them directly
+    if all_breakpoints and contours_by_level:
+        print("Creating global path using breakpoints")
         
-    # If we have connection metadata, use it to create an optimized path
-    if connection_metadata and 'breakpoint_connections' in connection_metadata:
-        print("Creating global path using breakpoint connections")
+        # Process breakpoint connections directly
+        _, connection_metadata = process_breakpoint_connections(
+            processed_paths, 
+            all_breakpoints, 
+            contours_by_level
+        )
+        
+        # Create the global path with the connection metadata
         return create_global_path_with_breakpoints(processed_paths, connection_metadata)
     
-    # Fallback to distance-based connection if no metadata available
-    print("No connection metadata available, using distance-based connection")
+    # Fallback to distance-based connection if no breakpoints available
+    print("No breakpoints available, using distance-based connection")
     return connect_using_distance(processed_paths)
 
-def connect_sub_paths(sub_paths: List[SubPath]) -> List[ShapelyPoint]:
+def connect_sub_paths(sub_paths: Dict) -> List[ShapelyPoint]:
     """
-    Legacy function that combines both steps of the connection process.
+    Legacy function that directly calls connect_all_subpaths_to_create_global_path.
     For backward compatibility.
 
     Args:
-        sub_paths: A list of SubPath objects or a SubPathsWithSkeletonData object.
+        sub_paths: A dictionary containing paths, contours_by_level, and all_breakpoints.
 
     Returns:
         A list of Shapely Points representing the final toolpath.
     """
-    processed_paths, connection_metadata = connect_subpaths_to_breakpoints(sub_paths)
-    return connect_all_subpaths_to_create_global_path(processed_paths, connection_metadata)
+    return connect_all_subpaths_to_create_global_path(sub_paths)
 
 def process_breakpoint_connections(sub_paths: List[SubPath], all_breakpoints: list, contours_by_level: dict) -> Tuple[List[SubPath], Dict]:
     """
@@ -1979,9 +1996,9 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
-    #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
 
-    stl_file_path = os.path.join("models", "wrench.stl")
+    #stl_file_path = os.path.join("models", "wrench.stl")
 
     #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
 
@@ -2131,8 +2148,8 @@ if __name__ == '__main__':
     print(f"Total sub-paths created: {len(sub_paths)}")
 
 
-    # --- 6a. Connect Sub-paths to Breakpoints ---
-    print("\n--- Connecting Sub-paths to Breakpoints ---")
+    # --- 6. Create Global Path from Sub-paths and Breakpoints ---
+    print("\n--- Creating Global Path from Sub-paths and Breakpoints ---")
     
     # Debug check for breakpoints
     if sub_paths and 'all_breakpoints' in sub_paths:
@@ -2140,15 +2157,8 @@ if __name__ == '__main__':
     else:
         print("DEBUG: Main function - no breakpoints found in data")
     
-    # Step 1: Connect subpaths to breakpoints
-    processed_paths, connection_metadata = connect_subpaths_to_breakpoints(sub_paths)
-    print(f"Processed {len(processed_paths)} sub-paths with breakpoint connections")
-    
-    # --- 6b. Create Global Path from Connected Sub-paths ---
-    print("\n--- Creating Global Path from Connected Sub-paths ---")
-    
-    # Step 2: Create the global path
-    final_toolpath = connect_all_subpaths_to_create_global_path(processed_paths, connection_metadata)
+    # Create the global path directly from sub_paths
+    final_toolpath = connect_all_subpaths_to_create_global_path(sub_paths)
     print(f"Total points in connected toolpath: {len(final_toolpath)}")
 
     # --- 6b. Optional Path Resampling ---
@@ -2209,6 +2219,12 @@ if __name__ == '__main__':
                 plt.axis('equal')
                 plt.tight_layout()
                 plt.show()
+                
+                # Create connection metadata for visualization
+                connection_metadata = {
+                    'contours_by_level': contours_by_level,
+                    'all_breakpoints': all_breakpoints
+                }
                 
                 # Call the dedicated breakpoint visualization function
                 visualize_breakpoint_connections(connection_metadata, layer_to_process_idx)
