@@ -674,42 +674,222 @@ def find_breakpoints_between_contours(
     # Get the total length of the current contour
     total_length = current_contour.length()
     
+    # Get breakpoint distribution parameters from config
+    config = get_config()
+    breakpoint_distribution = config.get('breakpoint_distribution', 'adaptive')
+    min_breakpoints = config.get('min_breakpoints_per_contour', 1)
+    max_breakpoints = config.get('max_breakpoints_per_contour', 10)
+    breakpoint_density = config.get('breakpoint_density', 1.0)  # Multiplier for density
+    
     # Calculate how many breakpoints to create based on contour length and n_layers_period
     # We want approximately one breakpoint every (line_spacing * n_layers_period) distance
     target_spacing = line_spacing * n_layers_period
     
-    # Adaptive number of breakpoints based on contour length and proximity
-    # Fewer breakpoints for distant contours, more for close ones
-    proximity_factor = 1.0 - (min_distance / max_breakpoint_distance)
-    adjusted_num_breakpoints = max(1, int((total_length / target_spacing) * (0.5 + proximity_factor)))
-    num_breakpoints = min(adjusted_num_breakpoints, 10)  # Cap at 10 breakpoints per contour pair
+    # Calculate number of breakpoints based on selected distribution method
+    if breakpoint_distribution == 'fixed':
+        # Fixed number of breakpoints regardless of contour length
+        num_breakpoints = min(max(min_breakpoints, int(config.get('fixed_breakpoints', 3))), max_breakpoints)
+        
+    elif breakpoint_distribution == 'length_proportional':
+        # Number of breakpoints proportional to contour length
+        num_breakpoints = min(max(min_breakpoints, 
+                                int((total_length / target_spacing) * breakpoint_density)), 
+                            max_breakpoints)
+        
+    elif breakpoint_distribution == 'adaptive':
+        # Adaptive number of breakpoints based on contour length and proximity
+        # Fewer breakpoints for distant contours, more for close ones
+        proximity_factor = 1.0 - (min_distance / max_breakpoint_distance)
+        adjusted_num_breakpoints = max(min_breakpoints, 
+                                    int((total_length / target_spacing) * (0.5 + proximity_factor) * breakpoint_density))
+        num_breakpoints = min(adjusted_num_breakpoints, max_breakpoints)
+        
+    elif breakpoint_distribution == 'distance_based':
+        # Place breakpoints at fixed distances along the contour
+        fixed_distance = config.get('breakpoint_fixed_distance', target_spacing)
+        num_breakpoints = min(max(min_breakpoints, int(total_length / fixed_distance)), max_breakpoints)
+    
+    else:
+        # Default to adaptive if unknown distribution method
+        proximity_factor = 1.0 - (min_distance / max_breakpoint_distance)
+        adjusted_num_breakpoints = max(min_breakpoints, 
+                                    int((total_length / target_spacing) * (0.5 + proximity_factor) * breakpoint_density))
+        num_breakpoints = min(adjusted_num_breakpoints, max_breakpoints)
     
     # For each breakpoint position - use vectorized operations where possible
     points_at_distances = []
     
-    # Pre-calculate all points at evenly spaced distances
-    for i in range(num_breakpoints):
-        # Calculate the position along the contour for p1
-        p1_distance = (i / num_breakpoints) * total_length
-        
-        # Get the point at this distance and its segment
-        p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
-        
-        if p1 is None or p1_segment is None:
-            continue
+    # Get breakpoint positioning method from config
+    config = get_config()
+    breakpoint_positioning = config.get('breakpoint_positioning', 'uniform')
+    
+    # Pre-calculate all points based on selected positioning method
+    if breakpoint_positioning == 'uniform':
+        # Uniform distribution - evenly spaced points
+        for i in range(num_breakpoints):
+            # Calculate the position along the contour for p1
+            p1_distance = (i / num_breakpoints) * total_length
             
-        # Calculate the position for p2, which is line_spacing distance from p1 along the contour
-        p2_distance = p1_distance + line_spacing
-        if p2_distance > total_length:
-            p2_distance = p2_distance - total_length  # Wrap around
+            # Get the point at this distance and its segment
+            p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
             
-        # Get the point at this distance and its segment
-        p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+            if p1 is None or p1_segment is None:
+                continue
+                
+            # Calculate the position for p2, which is line_spacing distance from p1 along the contour
+            p2_distance = p1_distance + line_spacing
+            if p2_distance > total_length:
+                p2_distance = p2_distance - total_length  # Wrap around
+                
+            # Get the point at this distance and its segment
+            p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+            
+            if p2 is None or p2_segment is None:
+                continue
+                
+            points_at_distances.append((p1, p2, p1_segment, p2_segment))
+            
+    elif breakpoint_positioning == 'random':
+        # Random distribution along the contour
+        import random
+        random.seed(config.get('random_seed', 42))  # Use fixed seed for reproducibility
         
-        if p2 is None or p2_segment is None:
-            continue
+        for i in range(num_breakpoints):
+            # Calculate a random position along the contour for p1
+            p1_distance = random.random() * total_length
             
-        points_at_distances.append((p1, p2, p1_segment, p2_segment))
+            # Get the point at this distance and its segment
+            p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
+            
+            if p1 is None or p1_segment is None:
+                continue
+                
+            # Calculate the position for p2, which is line_spacing distance from p1 along the contour
+            p2_distance = p1_distance + line_spacing
+            if p2_distance > total_length:
+                p2_distance = p2_distance - total_length  # Wrap around
+                
+            # Get the point at this distance and its segment
+            p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+            
+            if p2 is None or p2_segment is None:
+                continue
+                
+            points_at_distances.append((p1, p2, p1_segment, p2_segment))
+            
+    elif breakpoint_positioning == 'curvature_based':
+        # Try to place breakpoints at areas of high curvature
+        # This is a simplified approach - for a more accurate curvature calculation,
+        # you would need to compute the actual curvature at each point
+        
+        # First, get points at uniform distances for analysis
+        sample_points = []
+        num_samples = min(100, int(total_length))  # Sample up to 100 points
+        
+        for i in range(num_samples):
+            sample_dist = (i / num_samples) * total_length
+            sample_point, _, _ = current_contour.get_point_at_dist(sample_dist)
+            if sample_point is not None:
+                sample_points.append((sample_dist, sample_point))
+        
+        # Calculate approximate curvature at each point (using angle between adjacent segments)
+        curvature_values = []
+        
+        if len(sample_points) >= 3:
+            for i in range(len(sample_points)):
+                prev_idx = (i - 1) % len(sample_points)
+                next_idx = (i + 1) % len(sample_points)
+                
+                p_prev = sample_points[prev_idx][1]
+                p_curr = sample_points[i][1]
+                p_next = sample_points[next_idx][1]
+                
+                # Calculate vectors
+                v1 = (p_curr.x - p_prev.x, p_curr.y - p_prev.y)
+                v2 = (p_next.x - p_curr.x, p_next.y - p_curr.y)
+                
+                # Calculate angle between vectors (approximation of curvature)
+                dot_product = v1[0]*v2[0] + v1[1]*v2[1]
+                mag_v1 = (v1[0]**2 + v1[1]**2)**0.5
+                mag_v2 = (v2[0]**2 + v2[1]**2)**0.5
+                
+                if mag_v1 > 0 and mag_v2 > 0:
+                    cos_angle = max(-1, min(1, dot_product / (mag_v1 * mag_v2)))
+                    angle = math.acos(cos_angle)
+                    curvature_values.append((sample_points[i][0], angle))
+                else:
+                    curvature_values.append((sample_points[i][0], 0))
+            
+            # Sort by curvature (highest first)
+            curvature_values.sort(key=lambda x: x[1], reverse=True)
+            
+            # Take the top num_breakpoints points with highest curvature
+            selected_distances = [cv[0] for cv in curvature_values[:num_breakpoints]]
+            
+            # Create breakpoints at these distances
+            for p1_distance in selected_distances:
+                # Get the point at this distance and its segment
+                p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
+                
+                if p1 is None or p1_segment is None:
+                    continue
+                    
+                # Calculate the position for p2, which is line_spacing distance from p1 along the contour
+                p2_distance = p1_distance + line_spacing
+                if p2_distance > total_length:
+                    p2_distance = p2_distance - total_length  # Wrap around
+                    
+                # Get the point at this distance and its segment
+                p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+                
+                if p2 is None or p2_segment is None:
+                    continue
+                    
+                points_at_distances.append((p1, p2, p1_segment, p2_segment))
+        else:
+            # Fall back to uniform if not enough points
+            for i in range(num_breakpoints):
+                p1_distance = (i / num_breakpoints) * total_length
+                p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
+                
+                if p1 is None or p1_segment is None:
+                    continue
+                    
+                p2_distance = p1_distance + line_spacing
+                if p2_distance > total_length:
+                    p2_distance = p2_distance - total_length
+                    
+                p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+                
+                if p2 is None or p2_segment is None:
+                    continue
+                    
+                points_at_distances.append((p1, p2, p1_segment, p2_segment))
+    
+    else:
+        # Default to uniform distribution if unknown positioning method
+        for i in range(num_breakpoints):
+            # Calculate the position along the contour for p1
+            p1_distance = (i / num_breakpoints) * total_length
+        
+            # Get the point at this distance and its segment
+            p1, p1_segment, p1_segment_idx = current_contour.get_point_at_dist(p1_distance)
+            
+            if p1 is None or p1_segment is None:
+                continue
+                
+            # Calculate the position for p2, which is line_spacing distance from p1 along the contour
+            p2_distance = p1_distance + line_spacing
+            if p2_distance > total_length:
+                p2_distance = p2_distance - total_length  # Wrap around
+                
+            # Get the point at this distance and its segment
+            p2, p2_segment, p2_segment_idx = current_contour.get_point_at_dist(p2_distance)
+            
+            if p2 is None or p2_segment is None:
+                continue
+                
+            points_at_distances.append((p1, p2, p1_segment, p2_segment))
     
     # Skip if no valid points were found
     if not points_at_distances:
@@ -1801,9 +1981,9 @@ if __name__ == '__main__':
 
     #stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
 
-    #stl_file_path = os.path.join("models", "wrench.stl")
+    stl_file_path = os.path.join("models", "wrench.stl")
 
-    stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
+    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
 
     #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "u-shape.stl")
