@@ -1030,9 +1030,15 @@ def connect_subpaths_to_breakpoints(sub_paths_data: Dict) -> Tuple[List[SubPath]
 
 def connect_all_subpaths_to_create_global_path(sub_paths_data: Dict) -> List[ShapelyPoint]:
     """
-    Creates a single continuous global path from subpaths and breakpoints.
-    Bypasses the separate connect_subpaths_to_breakpoints step.
-
+    Creates a single continuous global path from subpaths by connecting endpoints.
+    
+    The algorithm works as follows:
+    1. Start with the first sub-path and add all its points to the global path
+    2. Remove that sub-path from the list of remaining sub-paths
+    3. Find the next sub-path that has an endpoint close to the current end point
+    4. Add that sub-path to the global path (in correct order) and remove it from the list
+    5. Repeat until no more sub-paths remain or no connections can be found
+    
     Args:
         sub_paths_data: A dictionary containing paths, contours_by_level, and all_breakpoints.
 
@@ -1044,31 +1050,97 @@ def connect_all_subpaths_to_create_global_path(sub_paths_data: Dict) -> List[Sha
     
     # Extract data directly from sub_paths_data
     sub_paths_list = sub_paths_data.get('paths', [])
-    all_breakpoints = sub_paths_data.get('all_breakpoints', [])
-    contours_by_level = sub_paths_data.get('contours_by_level', {})
     
     # Filter out empty paths
-    processed_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
-    if not processed_paths:
+    remaining_sub_paths = [p for p in sub_paths_list if p.points and len(p.points) >= 2]
+    if not remaining_sub_paths:
         return []
     
-    # If we have breakpoints and contours, process them directly
-    if all_breakpoints and contours_by_level:
-        print("Creating global path using breakpoints")
-        
-        # Process breakpoint connections directly
-        _, connection_metadata = process_breakpoint_connections(
-            processed_paths, 
-            all_breakpoints, 
-            contours_by_level
-        )
-        
-        # Create the global path with the connection metadata
-        return create_global_path_with_breakpoints(processed_paths, connection_metadata)
+    print(f"Connecting {len(remaining_sub_paths)} sub-paths to create global path")
     
-    # Fallback to distance-based connection if no breakpoints available
-    print("No breakpoints available, using distance-based connection")
-    return connect_using_distance(processed_paths)
+    # Initialize the global path with the first sub-path
+    global_path: List[ShapelyPoint] = []
+    
+    # Start with the first sub-path
+    current_sub_path = remaining_sub_paths.pop(0)
+    global_path.extend(current_sub_path.points)
+    
+    # Get the current end point
+    current_end_point = global_path[-1]
+    
+    # Get tolerance from config or use a reasonable default
+    config = get_config()
+    # Use a more generous tolerance for finding connections
+    POINT_EQUALITY_TOLERANCE = config.get('point_equality_tolerance', 0.1)
+    
+    # Continue until no more sub-paths remain
+    while remaining_sub_paths:
+        found_next = False
+        best_match_idx = -1
+        min_distance = float('inf')
+        should_reverse = False
+        
+        # Find the sub-path with the closest endpoint to the current end point
+        for i, next_sub_path in enumerate(remaining_sub_paths):
+            next_start_point = next_sub_path.points[0]
+            next_end_point = next_sub_path.points[-1]
+            
+            # Calculate distances to both endpoints
+            start_distance = current_end_point.distance(next_start_point)
+            end_distance = current_end_point.distance(next_end_point)
+            
+            # Find the closest endpoint
+            if start_distance < min_distance:
+                min_distance = start_distance
+                best_match_idx = i
+                should_reverse = False
+                
+            if end_distance < min_distance:
+                min_distance = end_distance
+                best_match_idx = i
+                should_reverse = True
+        
+        # If we found a close enough match, connect it
+        if best_match_idx != -1 and min_distance < POINT_EQUALITY_TOLERANCE:
+            next_sub_path = remaining_sub_paths.pop(best_match_idx)
+            
+            if should_reverse:
+                # Add points in reverse order (except the last which is a duplicate)
+                global_path.extend(reversed(next_sub_path.points[:-1]))
+            else:
+                # Add points in forward order (except the first which is a duplicate)
+                global_path.extend(next_sub_path.points[1:])
+                
+            # Update the current end point
+            current_end_point = global_path[-1]
+            found_next = True
+        
+        # If no close connection was found, try the closest one anyway
+        if not found_next and best_match_idx != -1:
+            next_sub_path = remaining_sub_paths.pop(best_match_idx)
+            
+            # Add a debug message about the jump distance
+            print(f"Making a jump of {min_distance:.3f} mm to connect to the next sub-path")
+            
+            if should_reverse:
+                # Add all points in reverse order
+                global_path.extend(reversed(next_sub_path.points))
+            else:
+                # Add all points in forward order
+                global_path.extend(next_sub_path.points)
+                
+            # Update the current end point
+            current_end_point = global_path[-1]
+            found_next = True
+        
+        # If we still couldn't find a connection, break the loop
+        if not found_next:
+            print(f"Warning: Could not find a connecting sub-path. {len(remaining_sub_paths)} sub-paths remain unconnected.")
+            break
+    
+    print(f"Created global path with {len(global_path)} points. {len(remaining_sub_paths)} sub-paths remain unconnected.")
+    
+    return global_path
 
 def connect_sub_paths(sub_paths: Dict) -> List[ShapelyPoint]:
     """
@@ -2116,11 +2188,15 @@ if __name__ == '__main__':
 
 
     #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
+
     #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+
     #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
 
     stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
+
+    #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
 
     #stl_file_path = os.path.join("models", "wrench.stl")
 
@@ -2134,7 +2210,6 @@ if __name__ == '__main__':
     #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
 
     #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
-    #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
 
 
     # testing (stlparts)

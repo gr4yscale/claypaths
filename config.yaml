@@ -57,6 +57,8 @@ random_seed: 42                         # Seed for random positioning (for repro
 #max_workers: 6                          # Maximum number of worker threads/processes
 #min_pairs_for_parallel: 1               # Minimum number of contour pairs to use parallel processing
 
+### Precision (merge these)
+point_equality_tolerance: 0.2            # tolerance for point equality checks
 point_equality_precision: 6              # Decimal precision for point equality checks
 
 
