@@ -5,7 +5,7 @@ max_layers_to_process: 1                # For quicker test cycles
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 1.25
+toolpath_width: 1.2
 # Height of each layer in mm
 layer_height: 0.5
 
@@ -32,19 +32,39 @@ visualize_continuous_path: true
 
 
 ### Sub-path Creation Parameters
-raster_resolution: 0.01                 # mm per pixel for rasterization (smaller = higher res)
-breakpoint_period: 1                    # Place breakpoints every N layers along contours
+breakpoint_period: 3                    # Place breakpoints every N layers along contours
 
 ### Breakpoint Connection Parameters
-max_breakpoint_distance: 2.0            # Maximum distance (mm) to consider for breakpoint connections
-enable_connecting_paths: true           # Create explicit connecting paths between breakpoints
-visualize_breakpoints: true             # Visualize breakpoints between contours
+max_breakpoint_distance: 2.5            # Maximum distance (mm) to consider for breakpoint connections
+visualize_breakpoints: false # Visualize breakpoints between contours
+spatial_index_buffer: 1.5               # Buffer multiplier for spatial index queries (relative to max_breakpoint_distance)
+debug_connect_subpaths: true # Enable debug visualization for connect_subpaths_to_breakpoints
+
+### Breakpoint Distribution Parameters
+breakpoint_distribution: 'fixed'     # Options: 'fixed', 'length_proportional', 'adaptive', 'distance_based'
+min_breakpoints_per_contour: 1           # Minimum number of breakpoints per contour
+max_breakpoints_per_contour: 50          # Maximum number of breakpoints per contour
+breakpoint_density: 3.0                  # Multiplier for breakpoint density (higher = more breakpoints)
+fixed_breakpoints: 3                     # Number of breakpoints when using 'fixed' distribution
+breakpoint_fixed_distance: 4.0          # Distance between breakpoints when using 'distance_based' distribution
+counterclockwise_traversal: false       # Traverse contours in counterclockwise direction
+
+### Breakpoint Positioning Parameters
+breakpoint_positioning: 'uniform'       # Options: 'uniform', 'random', 'curvature_based'
+random_seed: 42                         # Seed for random positioning (for reproducibility)
+
+#parallel_processing: true               # Use parallel processing for breakpoint finding
+#max_workers: 6                          # Maximum number of worker threads/processes
+#min_pairs_for_parallel: 1               # Minimum number of contour pairs to use parallel processing
+
+point_equality_precision: 6              # Decimal precision for point equality checks
 
 
 ### Path Resampling (Optional Post-processing)
-enable_resampling: true                 # Resample the final path to uniform segment length
+enable_resampling: false # Resample the final path to uniform segment length
+visualize_resampled_path: false # Show a separate plot of the resampled path
 resampling_segment_length: 0.05          # Target segment length in mm for resampling
-visualize_resampled_path: true          # Show a separate plot of the resampled path
+close_toolpath: false                   # Whether to close the toolpath by connecting back to start
 
 
 ### GCode generator
