@@ -75,7 +75,7 @@ class GCodeGenerator:
         Generate GCode commands for a path at a specific Z height.
         
         Args:
-            path (list): List of (x, y) coordinates
+            path (list): List of (x, y) coordinates or Shapely Points
             z_height (float): Z height for this path
             is_first_point (bool): Whether this is the first point in the print
             
@@ -87,18 +87,37 @@ class GCodeGenerator:
         
         commands = []
         
+        # Handle different path formats
+        if all(hasattr(p, 'x') and hasattr(p, 'y') for p in path):  # It's a list of Shapely Points
+            # Check if points have z-coordinate and use it if available
+            if hasattr(path[0], 'z') and path[0].z is not None:
+                # Use the z-coordinate from each point
+                points = [(p.x, p.y, p.z) for p in path]
+            else:
+                # Use the provided z_height for all points
+                points = [(p.x, p.y, z_height) for p in path]
+        else:  # It's a list of coordinate tuples
+            # Check if tuples include z-coordinate
+            if len(path[0]) >= 3:
+                points = path  # Already has z-coordinate
+            else:
+                # Add z_height to each point
+                points = [(p[0], p[1], z_height) for p in path]
+            
         # First point - move to position
-        x, y = path[0]
+        first_point = points[0]
+        x, y, point_z = first_point
         if is_first_point:
             commands.append(f"; Starting first layer path")
-            commands.append(f"G1 X{x:.3f} Y{y:.3f}")
+            commands.append(f"G1 X{x:.3f} Y{y:.3f} Z{point_z:.3f}")
         else:
             commands.append(f"; Starting new path segment")
-            commands.append(f"G1 X{x:.3f} Y{y:.3f}")
+            commands.append(f"G1 X{x:.3f} Y{y:.3f} Z{point_z:.3f}")
         
         # Remaining points - all moves at consistent speed
-        for x, y in path[1:]:
-            commands.append(f"G1 X{x:.3f} Y{y:.3f}")
+        for point in points[1:]:
+            x, y, point_z = point
+            commands.append(f"G1 X{x:.3f} Y{y:.3f} Z{point_z:.3f}")
             
         return "\n".join(commands)
     
@@ -121,20 +140,25 @@ class GCodeGenerator:
         gcode.append(self.generate_header())
         
         # Process each layer
-        for layer_idx, (layer, path) in enumerate(zip(layers, optimized_paths)):
-            if not path:
+        for layer_idx, layer_paths in enumerate(optimized_paths):
+            if not layer_paths:
                 gcode.append(f"; Skipping layer {layer_idx} - no valid path")
                 continue
-                
-            # Calculate Z height for this layer
+            
+            # Calculate Z height for this layer (used as fallback)
             z_height = min_z + (layer_idx * self.layer_height)
             
             # Add layer transition
             gcode.append(self.generate_layer_transition(z_height))
             
-            # Add path commands
-            is_first_point = (layer_idx == 0)
-            gcode.append(self.generate_path_commands(path, z_height, is_first_point))
+            # Process each path in the layer
+            for path_idx, path in enumerate(layer_paths):
+                if not path:
+                    continue
+                
+                # Add path commands
+                is_first_point = (layer_idx == 0 and path_idx == 0)
+                gcode.append(self.generate_path_commands(path, z_height, is_first_point))
         
         gcode.append(self.generate_footer())
         return "\n".join(gcode)

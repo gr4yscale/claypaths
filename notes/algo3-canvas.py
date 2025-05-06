@@ -26,7 +26,8 @@ except ImportError:
 
 
 # Import project modules
-from src.stl_loader import load_stl
+from src.stl_loader import load_stl, get_mesh_info
+from src.gcode_generator import GCodeGenerator
 from src.slicer import slice_mesh
 from src.config import load_config, get_config
 
@@ -2389,10 +2390,10 @@ if __name__ == '__main__':
     
     # Select STL file
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-    #stl_file_path = os.path.join("models", "t-shape.stl")
+    stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "wrench.stl")
     #stl_file_path = os.path.join("models", "mine","gear.stl")
-    stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
+    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
     
     print(f"Processing STL: {os.path.basename(stl_file_path)}")
     print(f"Using Line Spacing (Toolpath Width): {line_spacing} mm")
@@ -2402,7 +2403,19 @@ if __name__ == '__main__':
     stl_mesh = load_stl(stl_file_path)
     if stl_mesh is None:
         sys.exit("Failed to load STL file.")
+    if stl_mesh is not None:
+        # Get and display mesh information
+        mesh_info = get_mesh_info(stl_mesh)
+        print("\nMesh Information:")
+        print(f"  Number of triangles: {mesh_info['num_triangles']}")
+        print(f"  Volume: {mesh_info['volume']:.2f} cubic units")
+        print(f"  Dimensions (x,y,z): {mesh_info['dimensions']}")
+        print(f"  Min coordinates: {mesh_info['min_coords']}")
+        print(f"  Max coordinates: {mesh_info['max_coords']}")
 
+
+
+        
     layers_shapely = slice_mesh(stl_mesh, layer_height)
     if not layers_shapely:
         sys.exit("Slicing resulted in no layers.")
@@ -2583,6 +2596,28 @@ if __name__ == '__main__':
         print("\n=== Connecting All Layers into a Single Global Path ===")
         global_toolpath = connect_layers_to_global_path(all_layer_paths, all_layer_heights)
         print(f"Created global toolpath with {len(global_toolpath)} points across {len(all_layer_paths)} layers")
+
+
+        # Step 5: Generate GCode
+        if config.get('generate_gcode', True):
+            print("\nStep 5: Generating GCode...")
+            mesh_info = get_mesh_info(stl_mesh)
+            gcode_gen = GCodeGenerator()  # Will use flavor from config
+            
+            # Format the global toolpath for GCode generation
+            # The GCode generator expects a list of layers, where each layer contains a list of paths
+            # We need to wrap our global_toolpath in the expected structure
+            formatted_paths = [[global_toolpath]]
+            
+            # Pass the selected paths (optimized or unoptimized)
+            gcode = gcode_gen.generate_gcode(layers_to_process, formatted_paths, mesh_info['min_coords'][2])
+
+            # Save GCode to file
+            gcode_file = gcode_gen.save_gcode(gcode)
+            print(f"GCode saved to: {gcode_file}")
+        else:
+            print("\nGCode generation is disabled in config")
+
         
         # Visualize the global path if configured
         if config.get('visualize_global_path', True):
