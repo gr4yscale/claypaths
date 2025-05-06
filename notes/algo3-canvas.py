@@ -1504,16 +1504,17 @@ def create_global_path_with_breakpoints(sub_paths: List[SubPath], connection_met
     
     return global_path
 
-def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[ShapelyPoint]:
+def connect_using_distance(sub_paths: List[SubPath], start_point=None, z_height=0.0) -> List[ShapelyPoint]:
     """
     Connects sub-paths based on distance between endpoints.
     
     Args:
         sub_paths: List of SubPath objects
         start_point: Optional starting point
+        z_height: Z-height for this layer's path
         
     Returns:
-        A list of Shapely Points representing the connected path
+        A list of Shapely Points representing the connected path with z-coordinate
     """
     if not sub_paths:
         return []
@@ -1528,11 +1529,18 @@ def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[S
     # Start with the first valid sub-path or use the provided start point
     if start_point is None:
         current_sub_path = remaining_sub_paths.pop(0)
-        global_path.extend(current_sub_path.points)
+        # Add z-coordinate to each point
+        for point in current_sub_path.points:
+            # Create a new point with the same x,y but with the specified z-height
+            global_path.append(ShapelyPoint(point.x, point.y, z_height))
         current_end_point = global_path[-1]
     else:
-        global_path.append(start_point)
-        current_end_point = start_point
+        # If start_point already has a z-coordinate, use it, otherwise add the specified z-height
+        if hasattr(start_point, 'z') and start_point.z is not None:
+            global_path.append(start_point)
+        else:
+            global_path.append(ShapelyPoint(start_point.x, start_point.y, z_height))
+        current_end_point = global_path[-1]
 
     # Tolerance for comparing floating point coordinates
     CONNECT_TOLERANCE = 0.1  # Use the last set value, adjust if needed
@@ -1582,11 +1590,13 @@ def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[S
             points_to_add = matched_sub_path.points
 
             if reverse_needed:
-                # Add reversed points, skip the duplicate endpoint
-                global_path.extend(reversed(points_to_add[:-1]))
+                # Add reversed points with z-height, skip the duplicate endpoint
+                for point in reversed(points_to_add[:-1]):
+                    global_path.append(ShapelyPoint(point.x, point.y, z_height))
             else:
-                # Add points, skip the duplicate start point
-                global_path.extend(points_to_add[1:])
+                # Add points with z-height, skip the duplicate start point
+                for point in points_to_add[1:]:
+                    global_path.append(ShapelyPoint(point.x, point.y, z_height))
                 
             current_end_point = global_path[-1]
         else:
@@ -1629,9 +1639,11 @@ def connect_using_distance(sub_paths: List[SubPath], start_point=None) -> List[S
 
                 # When jumping, include the first point of the jumped-to path
                 if fallback_reverse_needed:
-                    global_path.extend(reversed(points_to_add))
+                    for point in reversed(points_to_add):
+                        global_path.append(ShapelyPoint(point.x, point.y, z_height))
                 else:
-                    global_path.extend(points_to_add)
+                    for point in points_to_add:
+                        global_path.append(ShapelyPoint(point.x, point.y, z_height))
                     
                 current_end_point = global_path[-1]
             else:
@@ -2166,6 +2178,196 @@ def visualize_resampled_path(
     except Exception as e:
         print(f"\nError during visualization: {e}")
 
+def visualize_global_3d_path(
+    global_path: List[ShapelyPoint],
+    stl_file_path: str
+):
+    """
+    Visualizes the global 3D path connecting all layers.
+    
+    Args:
+        global_path: List of ShapelyPoints with x, y, z coordinates
+        stl_file_path: Path to the STL file being processed
+    """
+    print("\n--- Visualizing Global 3D Path ---")
+    if not global_path:
+        print("No global path to visualize.")
+        return
+    
+    try:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        import numpy as np
+        
+        # Create figure and 3D axis
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Extract coordinates
+        x = [p.x for p in global_path]
+        y = [p.y for p in global_path]
+        z = [p.z for p in global_path]
+        
+        # Create a colormap based on z-height to visualize layers
+        unique_z_values = sorted(list(set(z)))
+        z_to_color = {z_val: plt.cm.viridis(i/max(1, len(unique_z_values)-1)) 
+                      for i, z_val in enumerate(unique_z_values)}
+        
+        # Plot each layer with a different color
+        for z_val in unique_z_values:
+            # Get points at this z-height
+            layer_indices = [i for i, height in enumerate(z) if height == z_val]
+            if not layer_indices:
+                continue
+                
+            # Extract coordinates for this layer
+            layer_x = [x[i] for i in layer_indices]
+            layer_y = [y[i] for i in layer_indices]
+            layer_z = [z[i] for i in layer_indices]
+            
+            # Plot this layer
+            ax.plot(layer_x, layer_y, layer_z, '-', 
+                   color=z_to_color[z_val], 
+                   linewidth=1.5, 
+                   label=f'Layer at z={z_val:.2f}mm')
+        
+        # Plot connecting segments between layers
+        for i in range(len(unique_z_values)-1):
+            # Find the last point of the current layer
+            current_z = unique_z_values[i]
+            next_z = unique_z_values[i+1]
+            
+            # Find indices where z changes from current_z to next_z
+            transition_indices = []
+            for j in range(len(z)-1):
+                if z[j] == current_z and z[j+1] == next_z:
+                    transition_indices.append(j)
+            
+            # Plot each transition
+            for idx in transition_indices:
+                ax.plot([x[idx], x[idx+1]], [y[idx], y[idx+1]], [z[idx], z[idx+1]], 
+                       'k--', linewidth=1.0, alpha=0.7)
+        
+        # Mark start and end points
+        ax.scatter(x[0], y[0], z[0], color='green', s=100, label='Start')
+        ax.scatter(x[-1], y[-1], z[-1], color='red', s=100, label='End')
+        
+        # Set labels and title
+        ax.set_xlabel('X (mm)')
+        ax.set_ylabel('Y (mm)')
+        ax.set_zlabel('Z (mm)')
+        ax.set_title(f'Global 3D Toolpath - {len(unique_z_values)} Layers ({os.path.basename(stl_file_path)})')
+        
+        # Create a custom legend with one entry per layer
+        if len(unique_z_values) <= 10:  # Only show legend for reasonable number of layers
+            plt.legend(fontsize='small')
+        else:
+            # Just show start and end points in legend
+            handles, labels = ax.get_legend_handles_labels()
+            # Keep only the start and end point entries
+            start_end_handles = [h for h, l in zip(handles, labels) if 'Start' in l or 'End' in l]
+            start_end_labels = [l for l in labels if 'Start' in l or 'End' in l]
+            ax.legend(start_end_handles, start_end_labels, fontsize='small')
+            
+            # Add text about number of layers
+            plt.figtext(0.5, 0.01, f"Total of {len(unique_z_values)} layers", 
+                       ha="center", fontsize=10, bbox={"facecolor":"orange", "alpha":0.2, "pad":5})
+        
+        # Set equal aspect ratio
+        ax.set_box_aspect([1, 1, 0.5])  # Adjust the last number to change z-axis scaling
+        
+        plt.tight_layout()
+        plt.show()
+        
+    except ImportError:
+        print("\nInstall matplotlib with 3D support to visualize the results: pip install matplotlib")
+    except Exception as e:
+        print(f"\nError during 3D visualization: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def connect_layers_to_global_path(layer_paths: List[List[ShapelyPoint]], layer_heights: List[float]) -> List[ShapelyPoint]:
+    """
+    Connects multiple layer paths into a single continuous global path.
+    
+    The algorithm works as follows:
+    1. Start with the first layer path
+    2. For each subsequent layer, determine whether to connect to its start or end
+       based on which would create the shortest travel distance
+    3. Reverse the layer path if needed to minimize travel distance
+    4. Add a connecting segment between layers
+    
+    Args:
+        layer_paths: List of layer paths, where each layer path is a list of ShapelyPoints
+        layer_heights: List of z-heights for each layer
+        
+    Returns:
+        A list of ShapelyPoints representing the final continuous toolpath across all layers
+    """
+    if not layer_paths:
+        return []
+    
+    # Get configuration
+    config = get_config()
+    
+    # Filter out empty layer paths
+    valid_layer_paths = [path for path in layer_paths if path]
+    if not valid_layer_paths:
+        return []
+    
+    print(f"Connecting {len(valid_layer_paths)} layer paths into a single global path")
+    
+    # Initialize the global path with the first layer
+    global_path = valid_layer_paths[0].copy()
+    
+    # Get the current end point
+    current_end_point = global_path[-1]
+    
+    # Connect subsequent layers
+    for i in range(1, len(valid_layer_paths)):
+        next_layer_path = valid_layer_paths[i]
+        if not next_layer_path:
+            continue
+        
+        # Get the start and end points of the next layer
+        next_start = next_layer_path[0]
+        next_end = next_layer_path[-1]
+        
+        # Calculate distances to determine whether to reverse the path
+        start_distance = ((current_end_point.x - next_start.x)**2 + 
+                          (current_end_point.y - next_start.y)**2)**0.5
+        end_distance = ((current_end_point.x - next_end.x)**2 + 
+                        (current_end_point.y - next_end.y)**2)**0.5
+        
+        # Determine whether to reverse the path
+        reverse_path = end_distance < start_distance
+        
+        # Add a connecting segment between layers
+        if reverse_path:
+            # Connect to the end of the next layer (which will become the start after reversal)
+            connecting_point = ShapelyPoint(next_end.x, next_end.y, current_end_point.z)
+            global_path.append(connecting_point)
+            
+            # Add the reversed path
+            for point in reversed(next_layer_path):
+                global_path.append(point)
+        else:
+            # Connect to the start of the next layer
+            connecting_point = ShapelyPoint(next_start.x, next_start.y, current_end_point.z)
+            global_path.append(connecting_point)
+            
+            # Add the path in original order
+            global_path.extend(next_layer_path)
+        
+        # Update the current end point
+        current_end_point = global_path[-1]
+        
+        print(f"Connected layer {i} with {'reversed' if reverse_path else 'original'} orientation")
+    
+    print(f"Created global path with {len(global_path)} points across {len(valid_layer_paths)} layers")
+    
+    return global_path
 
 #-----------------------------------------------------------------------------
 # Main Execution Logic
@@ -2176,77 +2378,25 @@ if __name__ == '__main__':
     config = get_config()
     line_spacing = config.get('toolpath_width', 0.4) # Use toolpath_width as line spacing
     layer_height = config.get('layer_height', 1.0)
-    layer_to_process_idx = config.get('layer_to_process_for_algo3', 2) # Choose a layer index
     n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
     
     # Add the new visualization option to the config if not present
     if 'visualize_subpaths' not in config:
         config['visualize_subpaths'] = True
-
+    
+    # Add option to process all layers
+    process_all_layers = config.get('process_all_layers', True)
+    
     # Select STL file
-    #stl_file_path = os.path.join(project_root, "models", "mine", "blob-with-slots.stl")
-
-
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
-
-    #stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
-
-    #stl_file_path = os.path.join("models", "extruded-rounded-rectangle.stl")
     #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-
-    stl_file_path = os.path.join(project_root, "models", "mine", "gear.stl")
-
-    #stl_file_path = os.path.join(project_root, "models", "cuboid-with-holes.stl")
-
+    #stl_file_path = os.path.join("models", "t-shape.stl")
     #stl_file_path = os.path.join("models", "wrench.stl")
-
-    #stl_file_path = os.path.join(project_root, "models", "hollow-cuboid.stl")
-
-    #stl_file_path = os.path.join("models", "t-shape.stl")
-    #stl_file_path = os.path.join("models", "u-shape.stl")
-
-    #stl_file_path = os.path.join("models", "cuboid-with-holes.stl")
-    #stl_file_path = os.path.join(project_root, "models", "mine", "hex.stl")
-    #stl_file_path = os.path.join("models", "mine", "polygon-c-solid.stl")
-
-    #stl_file_path = os.path.join(project_root, "models", "cuboid.stl")
-
-
-    # testing (stlparts)
-    #stl_file_path = os.path.join("models", "test", "hollow-cuboid.stl") #kinda works
-    #stl_file_path = os.path.join("models", "test", "5cm-cube-with-80-diameter-hole.stl")
-    #stl_file_path = os.path.join("models", "test", "hollow-cylinder.stl")
-    #stl_file_path = os.path.join("models", "test", "hollow-cylinder-with-floor.stl")
-    #stl_file_path = os.path.join("models", "test", "hollow-stadium.stl")
-    #stl_file_path = os.path.join("models", "test", "mountainbike-cable-holder.stl")
-    #stl_file_path = os.path.join("models", "test", "ring.stl")
-    #stl_file_path = os.path.join("models", "test", "truncated-cone.stl")
-    #stl_file_path = os.path.join("models", "test", "truncated-cone-with-hole.stl")
-    
-    # testing (mine, freecad)
-    #stl_file_path = os.path.join("models", "mine", "hex.stl")
-
-    
-    #confirmed working, simple models
-    #stl_file_path = os.path.join("models", "extruded-polygon.stl")
-    #stl_file_path = os.path.join("models", "t-shape.stl")
-    #stl_file_path = os.path.join("models", "cuboid.stl")
-    #stl_file_path = os.path.join("models", "right-triangular-prism.stl")
-    #stl_file_path = os.path.join("models", "stack-of-cuboids.stl")
-    #stl_file_path = os.path.join("models", "stack-of-cylinders.stl")
-
-
-
-
-
-
-
-
-
+    #stl_file_path = os.path.join("models", "mine","gear.stl")
+    stl_file_path = os.path.join("models", "mine", "hex-with-hex-hole.stl")
     
     print(f"Processing STL: {os.path.basename(stl_file_path)}")
     print(f"Using Line Spacing (Toolpath Width): {line_spacing} mm")
-    print(f"Processing Layer Index: {layer_to_process_idx}")
+    print(f"Layer Height: {layer_height} mm")
 
     # --- 1. Load STL and Slice ---
     stl_mesh = load_stl(stl_file_path)
@@ -2258,193 +2408,216 @@ if __name__ == '__main__':
         sys.exit("Slicing resulted in no layers.")
 
     num_layers_generated = len(layers_shapely)
-    if layer_to_process_idx >= num_layers_generated:
-        print(f"Warning: Requested layer index {layer_to_process_idx} is out of bounds (0-{num_layers_generated-1}).")
-        layer_to_process_idx = num_layers_generated - 1
-        print(f"Processing last available layer index instead: {layer_to_process_idx}")
-
-    # Select the specific layer (list of Shapely Polygons)
-    selected_layer_polygons = layers_shapely[layer_to_process_idx]
-    if not selected_layer_polygons:
-        sys.exit(f"Layer {layer_to_process_idx} contains no polygons.")
-
-    # For simplicity, assume we process the first polygon in the selected layer
-    # TODO: Handle multiple polygons per layer if necessary
-    if len(selected_layer_polygons) > 1:
-        print(f"Warning: Layer {layer_to_process_idx} has multiple polygons. Processing only the first one.")
-    shapely_polygon = selected_layer_polygons[0]
-
-    print(f"\n--- Original Polygon (Layer {layer_to_process_idx}) ---")
-    print(f"Area: {shapely_polygon.area:.2f}, Length: {shapely_polygon.length:.2f}")
-    print(f"Has {len(shapely_polygon.interiors)} holes.")
-
-
-    # --- 2. Perform Offsetting using Pyclipper ---
-    print("\n--- Generating Offsets using Pyclipper ---")
-    offset_results: List[List[Contour]] = []
-    line_spacing_scaled = int(line_spacing * CLIPPER_SCALE)
-
-    # Initial contours (level 0)
-    clipper_subject = shapely_polygon_to_clipper(shapely_polygon)
-    initial_contours = clipper_paths_to_contours(clipper_subject)
-    if not initial_contours:
-        sys.exit("Failed to convert initial Shapely polygon to Contour objects.")
-    offset_results.append(initial_contours)
-    print(f"Level 0: {len(initial_contours)} contours")
-
-    # Iteratively generate inward offsets
-    current_clipper_paths = clipper_subject
-    level = 1
-    while True:
-        pco = pyclipper.PyclipperOffset()
-        # Use JT_ROUND for smoother corners, adjust sensitivity if needed
-        pco.AddPaths(current_clipper_paths, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
-        # Negative delta for inward offset
-        offset_paths_scaled = pco.Execute(-line_spacing_scaled)
-
-        if not offset_paths_scaled:
-            print("No further offsets possible.")
-            break # Stop if no more offsets generated
-
-        level_contours = clipper_paths_to_contours(offset_paths_scaled)
-        if not level_contours:
-             print(f"Offsetting produced invalid contours at level {level}. Stopping.")
-             break
-
-        print(f"Level {level}: {len(level_contours)} contours generated")
-        offset_results.append(level_contours)
-        current_clipper_paths = offset_paths_scaled # Use result as input for next offset
-        level += 1
-
-        # Safety break
-        if level > 50:
-             print("Warning: Exceeded maximum offset levels (50). Stopping.")
-             break
-
-
-    # --- 3. Re-level Contours (Algorithm 1) ---
-    if not offset_results:
-         sys.exit("No offset contours were generated.")
-
-    # Pass only the initial outer/hole contours for typing reference if needed by the algorithm
-    # The current re_level assumes offset_results[0] IS the initial set.
-    print("\n--- Re-leveling Contours ---")
-    leveled_contours = re_level_contours(offset_results, [], []) # Pass empty lists as initial shapes are derived within
-    print(f"Re-leveled into {len(leveled_contours)} final levels.")
-    # for i, level_list in enumerate(leveled_contours):
-    #     print(f"  Final Level {i}: {[str(c) for c in level_list]}")
-
-
-    # --- 4/5. Create Sub-paths with Breakpoints ---
-    print("\n--- Creating Sub-paths with Breakpoints ---")
-    n_layers_period = config.get('breakpoint_period', 5) # How often breakpoint strategy changes
-    sub_paths = create_sub_paths(
-        leveled_contours,
-        line_spacing,
-    )
-    if not sub_paths:
-         sys.exit("Failed to create sub-paths using rasterization.")
-    print(f"Total sub-paths created: {len(sub_paths)}")
+    print(f"Generated {num_layers_generated} layers")
     
-    # --- 5b. Visualize Sub-paths ---
-    if config.get('visualize_subpaths', True):  # Add a config option, default to True
-        visualize_subpaths(sub_paths, layer_to_process_idx, stl_file_path)
-
-    # --- 6. Create Global Path from Sub-paths and Breakpoints ---
-    print("\n--- Creating Global Path from Sub-paths and Breakpoints ---")
-    
-    # Debug check for breakpoints
-    if sub_paths and 'all_breakpoints' in sub_paths:
-        print(f"DEBUG: Main function - found {len(sub_paths['all_breakpoints'])} breakpoints")
+    # Determine which layers to process
+    if process_all_layers:
+        # Process all layers up to the maximum specified in config
+        max_layers = config.get('max_layers_to_process', num_layers_generated)
+        layers_to_process = range(min(max_layers, num_layers_generated))
+        print(f"Processing all {len(layers_to_process)} layers")
     else:
-        print("DEBUG: Main function - no breakpoints found in data")
+        # Process only a single layer specified in config
+        layer_to_process_idx = config.get('layer_to_process_for_algo3', 2)
+        if layer_to_process_idx >= num_layers_generated:
+            print(f"Warning: Requested layer index {layer_to_process_idx} is out of bounds (0-{num_layers_generated-1}).")
+            layer_to_process_idx = num_layers_generated - 1
+            print(f"Processing last available layer index instead: {layer_to_process_idx}")
+        layers_to_process = [layer_to_process_idx]
+        print(f"Processing single layer: {layer_to_process_idx}")
+
+    # Store paths for each layer
+    all_layer_paths = []
+    all_layer_heights = []
     
-    # Create the global path directly from sub_paths
-    final_toolpath = connect_all_subpaths_to_create_global_path(sub_paths)
-    print(f"Total points in connected toolpath: {len(final_toolpath)}")
+    # Process each selected layer
+    for layer_idx in layers_to_process:
+        print(f"\n=== Processing Layer {layer_idx} ===")
+        
+        # Select the specific layer (list of Shapely Polygons)
+        selected_layer_polygons = layers_shapely[layer_idx]
+        if not selected_layer_polygons:
+            print(f"Layer {layer_idx} contains no polygons, skipping.")
+            continue
 
-    # --- 6b. Optional Path Resampling ---
-    resampled_toolpath = None # Initialize
-    if config.get('enable_resampling', False):
-        segment_length = config.get('resampling_segment_length', 0.5)
-        resampled_toolpath = resample_path_uniformly(final_toolpath, segment_length=segment_length)
-        path_to_visualize = resampled_toolpath # Visualize the resampled path in the main plot
-    else:
-        # Path to visualize is the result of the connection if resampling is disabled
-        path_to_visualize = final_toolpath
+        # For simplicity, assume we process the first polygon in the selected layer
+        # TODO: Handle multiple polygons per layer if necessary
+        if len(selected_layer_polygons) > 1:
+            print(f"Warning: Layer {layer_idx} has multiple polygons. Processing only the first one.")
+        shapely_polygon = selected_layer_polygons[0]
 
+        print(f"--- Original Polygon (Layer {layer_idx}) ---")
+        print(f"Area: {shapely_polygon.area:.2f}, Length: {shapely_polygon.length:.2f}")
+        print(f"Has {len(shapely_polygon.interiors)} holes.")
 
-    # --- 7. Optional: Visualize Main Results ---
-    if config.get('visualize_algo3_results', True):
-         visualize_final_toolpath(
-              shapely_polygon,
-              offset_results,
-              path_to_visualize,
-              layer_to_process_idx,
-              stl_file_path
-         )
-         
-    # --- 7b. Optional: Visualize Contours and Breakpoints ---
-    if config.get('visualize_breakpoints', True) and sub_paths:
-        try:
-            import matplotlib.pyplot as plt
+        # --- 2. Perform Offsetting using Pyclipper ---
+        print("\n--- Generating Offsets using Pyclipper ---")
+        offset_results: List[List[Contour]] = []
+        line_spacing_scaled = int(line_spacing * CLIPPER_SCALE)
+
+        # Initial contours (level 0)
+        clipper_subject = shapely_polygon_to_clipper(shapely_polygon)
+        initial_contours = clipper_paths_to_contours(clipper_subject)
+        if not initial_contours:
+            print(f"Failed to convert initial Shapely polygon to Contour objects for layer {layer_idx}, skipping.")
+            continue
+        offset_results.append(initial_contours)
+        print(f"Level 0: {len(initial_contours)} contours")
+
+        # Iteratively generate inward offsets
+        current_clipper_paths = clipper_subject
+        level = 1
+        while True:
+            pco = pyclipper.PyclipperOffset()
+            # Use JT_ROUND for smoother corners, adjust sensitivity if needed
+            pco.AddPaths(current_clipper_paths, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+            # Negative delta for inward offset
+            offset_paths_scaled = pco.Execute(-line_spacing_scaled)
+
+            if not offset_paths_scaled:
+                print("No further offsets possible.")
+                break # Stop if no more offsets generated
+
+            level_contours = clipper_paths_to_contours(offset_paths_scaled)
+            if not level_contours:
+                print(f"Offsetting produced invalid contours at level {level}. Stopping.")
+                break
+
+            print(f"Level {level}: {len(level_contours)} contours generated")
+            offset_results.append(level_contours)
+            current_clipper_paths = offset_paths_scaled # Use result as input for next offset
+            level += 1
+
+            # Safety break
+            if level > 50:
+                print("Warning: Exceeded maximum offset levels (50). Stopping.")
+                break
+
+        # --- 3. Re-level Contours (Algorithm 1) ---
+        if not offset_results:
+            print(f"No offset contours were generated for layer {layer_idx}, skipping.")
+            continue
+
+        # Pass only the initial outer/hole contours for typing reference if needed by the algorithm
+        # The current re_level assumes offset_results[0] IS the initial set.
+        print("\n--- Re-leveling Contours ---")
+        leveled_contours = re_level_contours(offset_results, [], []) # Pass empty lists as initial shapes are derived within
+        print(f"Re-leveled into {len(leveled_contours)} final levels.")
+
+        # --- 4/5. Create Sub-paths with Breakpoints ---
+        print("\n--- Creating Sub-paths with Breakpoints ---")
+        sub_paths = create_sub_paths(
+            leveled_contours,
+            line_spacing,
+        )
+        if not sub_paths:
+            print(f"Failed to create sub-paths for layer {layer_idx}, skipping.")
+            continue
+        print(f"Total sub-paths created: {len(sub_paths)}")
+        
+        # --- 5b. Visualize Sub-paths ---
+        if config.get('visualize_subpaths', True) and not process_all_layers:
+            visualize_subpaths(sub_paths, layer_idx, stl_file_path)
+
+        # --- 6. Create Global Path for this Layer ---
+        print("\n--- Creating Global Path for Layer ---")
+        
+        # Debug check for breakpoints
+        if sub_paths and 'all_breakpoints' in sub_paths:
+            print(f"DEBUG: Found {len(sub_paths['all_breakpoints'])} breakpoints")
+        else:
+            print("DEBUG: No breakpoints found in data")
+        
+        # Calculate z-height for this layer
+        z_height = layer_height * layer_idx
+        
+        # Create the global path for this layer with z-height
+        layer_toolpath = connect_using_distance(sub_paths.get('paths', []), None, z_height)
+        print(f"Total points in layer {layer_idx} toolpath: {len(layer_toolpath)}")
+
+        # --- 6b. Optional Path Resampling ---
+        if config.get('enable_resampling', False):
+            segment_length = config.get('resampling_segment_length', 0.5)
+            layer_toolpath = resample_path_uniformly(layer_toolpath, segment_length=segment_length)
+            print(f"Resampled layer {layer_idx} toolpath to {len(layer_toolpath)} points")
+
+        # Store this layer's path
+        all_layer_paths.append(layer_toolpath)
+        all_layer_heights.append(z_height)
+        
+        # --- 7. Optional: Visualize Layer Results (only for single layer processing) ---
+        if not process_all_layers and config.get('visualize_algo3_results', True):
+            visualize_final_toolpath(
+                shapely_polygon,
+                offset_results,
+                layer_toolpath,
+                layer_idx,
+                stl_file_path
+            )
             
-            # Unpack the data
-            contours_by_level = sub_paths.get('contours_by_level', {})
-            all_breakpoints = sub_paths.get('all_breakpoints', [])
-            
-            if contours_by_level:
-                # Visualize contours
-                plt.figure(figsize=(10, 10))
+        # --- 7b. Optional: Visualize Contours and Breakpoints (only for single layer) ---
+        if not process_all_layers and config.get('visualize_breakpoints', True) and sub_paths:
+            try:
+                import matplotlib.pyplot as plt
                 
-                # Plot contours
-                for level_idx, contours in contours_by_level.items():
-                    for contour in contours:
-                        if contour._line and not contour._line.is_empty:
-                            x, y = contour._line.xy
-                            plt.plot(x, y, '-', linewidth=1, alpha=0.7)
+                # Unpack the data
+                contours_by_level = sub_paths.get('contours_by_level', {})
+                all_breakpoints = sub_paths.get('all_breakpoints', [])
                 
-                # Plot breakpoints and connections
-                if all_breakpoints:
-                    for p1, p2, p1_proj, p2_proj in all_breakpoints:
-                        # Plot the breakpoints
-                        plt.plot(p1.x, p1.y, 'ro', markersize=4)
-                        plt.plot(p2.x, p2.y, 'bo', markersize=4)
-                        plt.plot(p1_proj.x, p1_proj.y, 'go', markersize=4)
-                        plt.plot(p2_proj.x, p2_proj.y, 'mo', markersize=4)
-                        
-                        # Plot the connections
-                        plt.plot([p1.x, p1_proj.x], [p1.y, p1_proj.y], 'r--', linewidth=0.8, alpha=0.6)
-                        plt.plot([p2.x, p2_proj.x], [p2.y, p2_proj.y], 'b--', linewidth=0.8, alpha=0.6)
+                if contours_by_level:
+                    # Create connection metadata for visualization
+                    connection_metadata = {
+                        'contours_by_level': contours_by_level,
+                        'all_breakpoints': all_breakpoints
+                    }
+                    
+                    # Call the dedicated breakpoint visualization function
+                    visualize_breakpoint_connections(connection_metadata, layer_idx)
+                else:
+                    print("Contour data not available for visualization")
+            except Exception as e:
+                print(f"Error visualizing contours and breakpoints: {e}")
+
+    # --- 8. Connect All Layers into a Single Global Path ---
+    if process_all_layers and all_layer_paths:
+        print("\n=== Connecting All Layers into a Single Global Path ===")
+        global_toolpath = connect_layers_to_global_path(all_layer_paths, all_layer_heights)
+        print(f"Created global toolpath with {len(global_toolpath)} points across {len(all_layer_paths)} layers")
+        
+        # Visualize the global path if configured
+        if config.get('visualize_global_path', True):
+            try:
+                import matplotlib.pyplot as plt
+                from mpl_toolkits.mplot3d import Axes3D
                 
-                plt.title(f"Contours and Breakpoints - Layer {layer_to_process_idx}")
-                plt.axis('equal')
+                fig = plt.figure(figsize=(12, 10))
+                ax = fig.add_subplot(111, projection='3d')
+                
+                # Extract coordinates
+                x = [p.x for p in global_toolpath]
+                y = [p.y for p in global_toolpath]
+                z = [p.z for p in global_toolpath]
+                
+                # Plot the path
+                ax.plot(x, y, z, '-', linewidth=1.0, alpha=0.7)
+                
+                # Mark start and end points
+                ax.scatter(x[0], y[0], z[0], color='green', s=50, label='Start')
+                ax.scatter(x[-1], y[-1], z[-1], color='red', s=50, label='End')
+                
+                # Set labels and title
+                ax.set_xlabel('X (mm)')
+                ax.set_ylabel('Y (mm)')
+                ax.set_zlabel('Z (mm)')
+                ax.set_title(f'Global Toolpath - {len(all_layer_paths)} Layers ({os.path.basename(stl_file_path)})')
+                
+                plt.legend()
                 plt.tight_layout()
                 plt.show()
-                
-                # Create connection metadata for visualization
-                connection_metadata = {
-                    'contours_by_level': contours_by_level,
-                    'all_breakpoints': all_breakpoints
-                }
-                
-                # Call the dedicated breakpoint visualization function
-                visualize_breakpoint_connections(connection_metadata, layer_to_process_idx)
-            else:
-                print("Contour data not available for visualization")
-        except Exception as e:
-            print(f"Error visualizing contours and breakpoints: {e}")
-
-    # --- 8. Optional: Visualize Resampled Path Separately ---
-    if resampled_toolpath and config.get('visualize_resampled_path', True): # Add new config flag if needed
-         segment_length = config.get('resampling_segment_length', 0.5) # Get length again for title
-         visualize_resampled_path(
-              resampled_toolpath,
-              segment_length,
-              layer_to_process_idx,
-              stl_file_path
-         )
-
+            except Exception as e:
+                print(f"Error visualizing global toolpath: {e}")
+                import traceback
+                traceback.print_exc()
 
     print("\nProcessing finished.")
 
