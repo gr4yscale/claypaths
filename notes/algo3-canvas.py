@@ -2598,19 +2598,30 @@ if __name__ == '__main__':
         print(f"Created global toolpath with {len(global_toolpath)} points across {len(all_layer_paths)} layers")
 
 
-        # Step 5: Generate GCode
+        # Step 5: Resample the global toolpath for smoother movement
         if config.get('generate_gcode', True):
-            print("\nStep 5: Generating GCode...")
+            print("\nStep 5: Resampling global toolpath and generating GCode...")
             mesh_info = get_mesh_info(stl_mesh)
+            
+            # Get resampling parameters from config
+            segment_length = config.get('final_resampling_segment_length', 0.5)
+            print(f"Resampling global toolpath with segment length: {segment_length} mm")
+            
+            # Resample the global toolpath for smoother movement
+            resampled_global_toolpath = resample_path_uniformly(global_toolpath, segment_length)
+            print(f"Resampled global toolpath from {len(global_toolpath)} to {len(resampled_global_toolpath)} points")
+            
+            # Initialize GCode generator
             gcode_gen = GCodeGenerator()  # Will use flavor from config
             
-            # Format the global toolpath for GCode generation
+            # Format the resampled global toolpath for GCode generation
             # The GCode generator expects a list of layers, where each layer contains a list of paths
-            # We need to wrap our global_toolpath in the expected structure
-            formatted_paths = [[global_toolpath]]
+            # We need to wrap our resampled_global_toolpath in the expected structure
+            formatted_paths = [[resampled_global_toolpath]]
             
-            # Pass the selected paths (optimized or unoptimized)
-            gcode = gcode_gen.generate_gcode(layers_to_process, formatted_paths, mesh_info['min_coords'][2])
+            # Pass the resampled paths and layer information to the GCode generator
+            # This allows the generator to properly handle layer transitions
+            gcode = gcode_gen.generate_gcode(list(layers_to_process), formatted_paths, mesh_info['min_coords'][2])
 
             # Save GCode to file
             gcode_file = gcode_gen.save_gcode(gcode)
@@ -2628,10 +2639,26 @@ if __name__ == '__main__':
                 fig = plt.figure(figsize=(12, 10))
                 ax = fig.add_subplot(111, projection='3d')
                 
-                # Extract coordinates
-                x = [p.x for p in global_toolpath]
-                y = [p.y for p in global_toolpath]
-                z = [p.z for p in global_toolpath]
+                # Extract coordinates from the resampled path if available, otherwise use original
+                path_to_visualize = resampled_global_toolpath if 'resampled_global_toolpath' in locals() else global_toolpath
+                
+                # Extract coordinates safely handling points that might not have z-coordinate
+                x = [p.x for p in path_to_visualize]
+                y = [p.y for p in path_to_visualize]
+                
+                # Safely extract z-coordinates with error handling
+                z = []
+                for p in path_to_visualize:
+                    try:
+                        z.append(p.z)
+                    except (AttributeError, Exception):
+                        # If point has no z-coordinate, use the layer height * index as fallback
+                        # Find which layer this point belongs to based on its index
+                        point_idx = path_to_visualize.index(p)
+                        # Estimate layer based on point position in the path
+                        estimated_layer = min(len(all_layer_paths)-1, 
+                                             int(point_idx / (len(path_to_visualize) / len(all_layer_paths))))
+                        z.append(all_layer_heights[estimated_layer])
                 
                 # Plot the path
                 ax.plot(x, y, z, '-', linewidth=1.0, alpha=0.7)
@@ -2644,7 +2671,8 @@ if __name__ == '__main__':
                 ax.set_xlabel('X (mm)')
                 ax.set_ylabel('Y (mm)')
                 ax.set_zlabel('Z (mm)')
-                ax.set_title(f'Global Toolpath - {len(all_layer_paths)} Layers ({os.path.basename(stl_file_path)})')
+                path_type = "Resampled" if 'resampled_global_toolpath' in locals() else "Original"
+                ax.set_title(f'{path_type} Global Toolpath - {len(all_layer_paths)} Layers ({os.path.basename(stl_file_path)})')
                 
                 plt.legend()
                 plt.tight_layout()

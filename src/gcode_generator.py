@@ -89,12 +89,15 @@ class GCodeGenerator:
         
         # Handle different path formats
         if all(hasattr(p, 'x') and hasattr(p, 'y') for p in path):  # It's a list of Shapely Points
-            # Check if points have z-coordinate and use it if available
-            if hasattr(path[0], 'z') and path[0].z is not None:
-                # Use the z-coordinate from each point
+            # Safely check if points have z-coordinate and use it if available
+            # Use a try/except block to handle the DimensionError that Shapely raises
+            try:
+                # Try to access z coordinate of first point to check if it exists
+                test_z = path[0].z
+                # If we get here, z exists and we can use it for all points
                 points = [(p.x, p.y, p.z) for p in path]
-            else:
-                # Use the provided z_height for all points
+            except (AttributeError, Exception):
+                # Use the provided z_height for all points if z coordinate doesn't exist
                 points = [(p.x, p.y, z_height) for p in path]
         else:  # It's a list of coordinate tuples
             # Check if tuples include z-coordinate
@@ -139,26 +142,78 @@ class GCodeGenerator:
         gcode = []
         gcode.append(self.generate_header())
         
-        # Process each layer
-        for layer_idx, layer_paths in enumerate(optimized_paths):
-            if not layer_paths:
-                gcode.append(f"; Skipping layer {layer_idx} - no valid path")
-                continue
+        # For global path processing (when we have a single continuous path across all layers)
+        if len(optimized_paths) == 1 and len(optimized_paths[0]) == 1:
+            # We have a single global path that spans all layers
+            global_path = optimized_paths[0][0]
             
-            # Calculate Z height for this layer (used as fallback)
-            z_height = min_z + (layer_idx * self.layer_height)
+            # Create a mapping of point indices to layer indices
+            point_to_layer_map = {}
+            current_z = None
+            current_layer = -1
             
-            # Add layer transition
-            gcode.append(self.generate_layer_transition(z_height))
+            # Map each point to its corresponding layer based on z-height
+            for i, point in enumerate(global_path):
+                try:
+                    point_z = point.z
+                    # If this is a new z-height, it's a new layer
+                    if point_z != current_z:
+                        current_z = point_z
+                        current_layer += 1
+                    point_to_layer_map[i] = current_layer
+                except (AttributeError, Exception):
+                    # If point has no z-coordinate, estimate layer based on index
+                    estimated_layer = min(len(layers)-1, int(i / (len(global_path) / len(layers))))
+                    point_to_layer_map[i] = estimated_layer
             
-            # Process each path in the layer
-            for path_idx, path in enumerate(layer_paths):
-                if not path:
+            # Process the global path with layer transitions
+            current_layer = -1
+            for i, point in enumerate(global_path):
+                # Check if we're entering a new layer
+                point_layer = point_to_layer_map[i]
+                if point_layer != current_layer:
+                    current_layer = point_layer
+                    # Calculate Z height for this layer
+                    z_height = min_z + (current_layer * self.layer_height)
+                    # Add layer transition
+                    gcode.append(self.generate_layer_transition(z_height))
+                    gcode.append(f"; Starting layer {current_layer}")
+                
+                # For the first point, we need a complete move command
+                if i == 0:
+                    try:
+                        gcode.append(f"G1 X{point.x:.3f} Y{point.y:.3f} Z{point.z:.3f}")
+                    except (AttributeError, Exception):
+                        z_height = min_z + (point_to_layer_map[i] * self.layer_height)
+                        gcode.append(f"G1 X{point.x:.3f} Y{point.y:.3f} Z{z_height:.3f}")
+                else:
+                    # For subsequent points, add movement commands
+                    try:
+                        gcode.append(f"G1 X{point.x:.3f} Y{point.y:.3f} Z{point.z:.3f}")
+                    except (AttributeError, Exception):
+                        z_height = min_z + (point_to_layer_map[i] * self.layer_height)
+                        gcode.append(f"G1 X{point.x:.3f} Y{point.y:.3f} Z{z_height:.3f}")
+        else:
+            # Process each layer separately (original behavior)
+            for layer_idx, layer_paths in enumerate(optimized_paths):
+                if not layer_paths:
+                    gcode.append(f"; Skipping layer {layer_idx} - no valid path")
                     continue
                 
-                # Add path commands
-                is_first_point = (layer_idx == 0 and path_idx == 0)
-                gcode.append(self.generate_path_commands(path, z_height, is_first_point))
+                # Calculate Z height for this layer (used as fallback)
+                z_height = min_z + (layer_idx * self.layer_height)
+                
+                # Add layer transition
+                gcode.append(self.generate_layer_transition(z_height))
+                
+                # Process each path in the layer
+                for path_idx, path in enumerate(layer_paths):
+                    if not path:
+                        continue
+                    
+                    # Add path commands
+                    is_first_point = (layer_idx == 0 and path_idx == 0)
+                    gcode.append(self.generate_path_commands(path, z_height, is_first_point))
         
         gcode.append(self.generate_footer())
         return "\n".join(gcode)
