@@ -118,10 +118,10 @@ def main():
                 layer_paths = []
                 # Process each polygon in the layer (usually one, but could be more for complex slices)
                 for poly_idx, polygon in enumerate(layer_polygons):
-                    print(f"  Generating continuous offset fill for polygon {poly_idx+1}...")
+                    print(f"  Generating continuous path for polygon {poly_idx+1}...")
 
-                    # Generate the continuous path using the new method
-                    continuous_path = generate_continuous_offset_fill(polygon, toolpath_width)
+                    # Generate the continuous path here
+                    
 
                     if continuous_path:
                         layer_paths.append(continuous_path)
@@ -133,8 +133,6 @@ def main():
                 if layer_paths:
                      # Combine paths if multiple polygons were processed in the layer
                      # For now, assume we just take the paths as a list (or combine if needed by optimizer later)
-                     # If the fill function returns a single LineString per polygon,
-                     # we might need an optimizer step here to connect them if there are multiple.
                      # For now, store them as a list.
                      all_layer_paths.append(layer_paths) # Store paths for this layer
                      paths_for_gcode.append(layer_paths) # Add to list for GCode
@@ -142,10 +140,6 @@ def main():
                      all_layer_paths.append([]) # Keep layer count consistent
                      paths_for_gcode.append([])
 
-
-            # Step 4: (Optional) Optimization - Skipped for now, using direct output
-            print("\nStep 4: Toolpath Optimization (Skipped - Using direct continuous path)")
-            # optimized_paths = paths_for_gcode # Use the generated paths directly
 
 
             # Step 5: Generate GCode

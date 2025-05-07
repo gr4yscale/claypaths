@@ -2617,11 +2617,27 @@ if __name__ == '__main__':
             # Format the resampled global toolpath for GCode generation
             # The GCode generator expects a list of layers, where each layer contains a list of paths
             # We need to wrap our resampled_global_toolpath in the expected structure
+            
+            # Create a connection_metadata dictionary if it doesn't exist
+            connection_metadata = {}
+            
+            # Try to get breakpoint connections from sub_paths data
+            if 'sub_paths' in locals() and isinstance(sub_paths, dict):
+                if 'breakpoint_connections' in sub_paths:
+                    connection_metadata['breakpoint_connections'] = sub_paths['breakpoint_connections']
+            
+            # Since we can't attach attributes to a list directly, we'll pass the connection metadata separately
+            # Create a dictionary to store the path and its metadata
+            path_with_metadata = {
+                'path': resampled_global_toolpath,
+                'breakpoint_connections': connection_metadata.get('breakpoint_connections', {})
+            }
+                
             formatted_paths = [[resampled_global_toolpath]]
             
-            # Pass the resampled paths and layer information to the GCode generator
+            # Pass the resampled paths, metadata, and layer information to the GCode generator
             # This allows the generator to properly handle layer transitions
-            gcode = gcode_gen.generate_gcode(list(layers_to_process), formatted_paths, mesh_info['min_coords'][2])
+            gcode = gcode_gen.generate_gcode(list(layers_to_process), formatted_paths, mesh_info['min_coords'][2], path_with_metadata)
 
             # Save GCode to file
             gcode_file = gcode_gen.save_gcode(gcode)

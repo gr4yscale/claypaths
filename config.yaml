@@ -1,13 +1,13 @@
 
 ### Testing
-max_layers_to_process: 1                # For quicker test cycles
+max_layers_to_process: 15                # For quicker test cycles
 
 ### Print settings (shared)
 
 # Width of the toolpath in mm
-toolpath_width: 1.2
+toolpath_width: 0.3
 # Height of each layer in mm
-layer_height: 0.5
+layer_height: 0.2
 
 # Number of perimeter walls to generate
 perimeter_count: 1
@@ -45,9 +45,9 @@ breakpoint_distribution: 'fixed'     # Options: 'fixed', 'length_proportional', 
 min_breakpoints_per_contour: 1           # Minimum number of breakpoints per contour
 max_breakpoints_per_contour: 50          # Maximum number of breakpoints per contour
 breakpoint_density: 3.0                  # Multiplier for breakpoint density (higher = more breakpoints)
-fixed_breakpoints: 3                     # Number of breakpoints when using 'fixed' distribution
+fixed_breakpoints: 7                     # Number of breakpoints when using 'fixed' distribution
 breakpoint_fixed_distance: 4.0          # Distance between breakpoints when using 'distance_based' distribution
-counterclockwise_traversal: false       # Traverse contours in counterclockwise direction
+counterclockwise_traversal: true # Traverse contours in counterclockwise direction
 
 ### Breakpoint Positioning Parameters
 breakpoint_positioning: 'uniform'       # Options: 'uniform', 'random', 'curvature_based'
@@ -70,7 +70,13 @@ close_toolpath: false                   # Whether to close the toolpath by conne
 
 
 ### GCode generator
-generate_gcode: False                   # Whether to generate GCode output
+generate_gcode: true # Whether to generate GCode output
 gcode_flavor: "klipper"                 # GCode flavor, either "klipper" or "marlin"
 print_speed: 20                         # Movement speed in mm/s
+travel_speed: 40                        # Travel speed in mm/s
 acceleration: 500                       # Acceleration in mm/s²
+retraction_distance: 2.0
+retraction_speed: 40
+extrusion_enabled: true
+extrusion_rate: 1.0
+
